@@ -327,24 +327,21 @@ def sync_to_google_sheets():
     # 4. Dynamically re-optimize path around user locks
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 5. Calculate Cumulative Survival Percentages based on Model Win %
+    # 5. Calculate Cumulative Survival Percentage based on Model Win %
     cum_prob = 1.0
-    weekly_cum_probs = {}
     for w in range(1, WEEKS + 1):
         effective_team = locked_picks.get(w, optimal_path.get(w, ""))
         week_cands = all_weekly_slates.get(w, [])
         matched = next((c for c in week_cands if c["team"] == effective_team and c["mod_prob"] is not None), None)
         
-        # Default to highest candidate prob or conservative baseline if unpriced
         if matched and matched["mod_prob"] is not None:
             w_prob = matched["mod_prob"]
         elif week_cands and week_cands[0]["mod_prob"] is not None:
             w_prob = week_cands[0]["mod_prob"]
         else:
-            w_prob = 0.74  # Baseline model average for primary survivor tier
+            w_prob = 0.74  # Baseline model average for unpriced lookaheads
             
         cum_prob *= w_prob
-        weekly_cum_probs[w] = cum_prob
 
     # 6. Construct Row Matrix
     headers = [
@@ -355,20 +352,19 @@ def sync_to_google_sheets():
     matrix = [["" for _ in range(10)] for _ in range(total_grid_rows + 2)]
     matrix[0] = headers
 
-    # Continuous Columns A-D (Rows 2 to 19) with cumulative percent attached
+    # Continuous Columns A-D (Rows 2 to 19) showing strictly the clean team pick
     for w in range(1, WEEKS + 1):
         r_idx = w
         rec_team = optimal_path.get(w, "")
-        cum_str = f"{weekly_cum_probs[w] * 100:.1f}%"
         
         matrix[r_idx][0] = f"Week {w}"
-        matrix[r_idx][1] = f"{rec_team} ({cum_str})" if rec_team else ""
+        matrix[r_idx][1] = rec_team
         matrix[r_idx][2] = ""
         matrix[r_idx][3] = locked_picks.get(w, "")
 
-    # Add Cumulative Season Summary in Rows 20 & 21
-    matrix[20][0] = "🏆 18-Week Full Season Survival Chance"
-    matrix[20][1] = f"{weekly_cum_probs[18] * 100:.2f}%"
+    # Row 20: Full Season Cumulative Probability Summary
+    matrix[19][0] = "🏆 18-Week Full Season Survival Chance"
+    matrix[19][1] = f"{cum_prob * 100:.2f}%"
 
     yellow_rows = []
     merge_ranges = []
@@ -437,8 +433,8 @@ def sync_to_google_sheets():
     sheet.format(f"E2:I{total_grid_rows + 2}", {"horizontalAlignment": "CENTER"})
     sheet.format(f"J2:J{total_grid_rows + 2}", {"horizontalAlignment": "LEFT"})
 
-    # Summary Row 21 (18-Week Cumulative Chance)
-    sheet.format("A21:B21", {
+    # Summary Row 20 (Full Season Cumulative Chance)
+    sheet.format("A20:B20", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
         "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
         "horizontalAlignment": "CENTER"
@@ -469,7 +465,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet refreshed with cumulative survival percentages in Columns A & B.")
+    print("Success: Google Sheet refreshed cleanly with cumulative chance only at the end.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
