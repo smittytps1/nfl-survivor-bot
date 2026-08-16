@@ -143,7 +143,7 @@ def calculate_model_prob(
   return min(0.96, max(0.51, round(adj_prob, 3)))
 
 
-# --- 1. FETCH OFFICIAL SCHEDULE & SPORTSBOOK ODDS ---
+# --- 1. FETCH SCHEDULE & SPORTSBOOK ODDS ---
 def fetch_online_schedule():
   url = (
       "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
@@ -387,7 +387,7 @@ def sync_to_google_sheets():
 
   total_grid_rows = 1 + (WEEKS * 6)
 
-  # Clear styles across Columns A to I
+  # Clear styles strictly across Columns A to I
   sheet.format(
       f"A1:I{total_grid_rows + 20}",
       {
@@ -479,8 +479,8 @@ def sync_to_google_sheets():
     cands = all_weekly_slates.get(w, [])
     block_start_row = 1 + (w - 1) * 6 + 1
 
-    # Weekly banner title updated to "Top candidates for that week"
-    matrix[block_start_row - 1][4] = "Top candidates for that week"
+    # Header row formatted dynamically per week
+    matrix[block_start_row - 1][4] = f"Top candidates for Week {w}"
     merge_ranges.append(f"E{block_start_row}:I{block_start_row}")
 
     for i in range(5):
@@ -518,7 +518,7 @@ def sync_to_google_sheets():
   print(f"Writing {total_grid_rows + 2} rows to Google Sheet '{SHEET_TITLE}'...")
   sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
 
-  # 8. Merge cells E:I for each weekly section header
+  # 8. Merge cells strictly across E:I for each weekly section header
   for rng in merge_ranges:
     try:
       sheet.merge_cells(rng, merge_type="MERGE_ALL")
@@ -597,7 +597,7 @@ def sync_to_google_sheets():
   if batch_formats:
     sheet.batch_format(batch_formats)
 
-  print("Success: Google Sheet updated cleanly without Column J.")
+  print("Success: Google Sheet updated with dynamic weekly titles across E:I.")
 
 
 if __name__ == "__main__":
