@@ -144,94 +144,13 @@ def calculate_model_prob(
   return min(0.96, max(0.51, round(adj_prob, 3)))
 
 
-# --- 1. DYNAMIC SYNTHESIS ENGINE ---
-def generate_game_synthesis(
-    team, opp, is_home, spread, mod_prob, week, is_rec
-):
-  """Synthesizes EPA, PBWR/PRWR, travel/weather spots, and survivor future value without mentioning the spread."""
-  if spread is None or mod_prob is None:
-    return ""
-
-  loc = "at home" if is_home else "on the road"
-
-  # Trench & EPA differentials
-  if abs(spread) >= 8.5:
-    trench = (
-        f"Significant line-of-scrimmage control {loc} creates a dominant net"
-        " EPA/play edge, driven by top-tier Pass Block Win Rate against a"
-        f" vulnerable {opp} pass rush."
-    )
-  elif abs(spread) >= 5.0:
-    trench = (
-        f"High early-down efficiency and 3rd-down success rate projections"
-        f" provide {team} with consistent scoring equity against {opp}."
-    )
-  else:
-    trench = (
-        f"Competitive matchup where {team}'s takeaway margin and red zone"
-        f" conversion efficiency offer a distinct edge over {opp}."
-    )
-
-  # Situational, Rest, & Travel Context
-  context = []
-  if is_home:
-    context.append(
-        "Home field operational familiarity and crowd cadence establish"
-        " pre-snap advantages."
-    )
-
-  if week <= 4:
-    context.append(
-        "Clean early-season baseline and roster continuity insulate against"
-        " high-variance volatility."
-    )
-  elif week >= 13:
-    context.append(
-        "Late-season trench depth and weather resilience provide strong scoring"
-        " floor stability."
-    )
-  else:
-    context.append(
-        "Mid-season DVOA stability and situational rest dynamic drive reliable"
-        " execution."
-    )
-
-  # 18-Week Survivor Portfolio Management
-  if is_rec:
-    fv = (
-        f"SURVIVOR SELECTION: Captures peak win equity for Week {week} while"
-        " protecting core Future Value assets for late-season bottlenecks."
-    )
-  else:
-    fv = (
-        "Viable alternative; model preserves higher comparative equity for"
-        " future slates."
-    )
-
-  return f"{trench} {' '.join(context)} {fv}"
-
-
+# --- 1. DYNAMIC MATCHUP REASONING (ZERO BOILERPLATE) ---
 def generate_deep_ai_reasoning(weekly_slates, optimal_path):
   gemini_key = os.environ.get("GEMINI_API_KEY")
   reasoning_map = {}
 
   if not gemini_key:
-    # Use high-conviction quantitative generator
-    for w in range(1, WEEKS + 1):
-      rec = optimal_path.get(w, "")
-      for c in weekly_slates.get(w, []):
-        if c.get("spread") is not None:
-          reasoning_map[(w, c["team"])] = generate_game_synthesis(
-              c["team"],
-              c.get("opponent", "OPP"),
-              c.get("home", True),
-              c["spread"],
-              c["mod_prob"],
-              w,
-              (c["team"] == rec),
-          )
-        else:
-          reasoning_map[(w, c["team"])] = ""
+    print("Warning: GEMINI_API_KEY is not set. Column J will be left blank.")
     return reasoning_map
 
   client = genai.Client(api_key=gemini_key)
@@ -249,6 +168,7 @@ def generate_deep_ai_reasoning(weekly_slates, optimal_path):
         week_candidates.append({
             "team": c["team"],
             "opponent": c.get("opponent", ""),
+            "matchup": c.get("matchup", ""),
             "is_home": c.get("home", True),
             "is_recommended": (c["team"] == rec),
         })
@@ -258,14 +178,18 @@ def generate_deep_ai_reasoning(weekly_slates, optimal_path):
 
     prompt = f"""
         You are an elite NFL quantitative analyst and Survivor Pool strategist.
-        Generate a concise, deeply synthesized matchup breakdown (25-40 words) for each Week {w} game below.
+        Write a concise, deeply analytical, and 100% UNIQUE matchup synthesis (30-45 words) for each Week {w} game candidate below.
 
-        CRITICAL CONSTRAINTS:
-        1. DO NOT mention the point spread or betting odds number.
-        2. Synthesize: Passing/Rushing EPA differentials, Pass Block Win Rate vs pass rush, red zone touchdown efficiency, travel fatigue, and venue dynamics (dome vs outdoor weather).
-        3. If 'is_recommended' is true, note why taking this team maximizes 18-week Survivor path equity while protecting Future Value (FV).
+        ABSOLUTE RULES:
+        1. DO NOT repeat the point spread or betting odds numbers.
+        2. NEVER use generic template phrases (e.g. do NOT say 'clean early-season baseline', 'roster continuity', 'crowd cadence', or 'home field operational familiarity').
+        3. CITE SPECIFIC SCHEMATICS & MATCHUP TRAITS for these exact teams:
+           - Trench battles: Offensive line Pass Block Win Rate (PBWR) vs opponent's pass rush pressure rate.
+           - Playcalling/EPA: Passing vs Rushing EPA differentials, man/zone coverage vulnerabilities, and red zone touchdown conversion.
+           - Environmental/Travel factors: Climate-controlled dome speed, outdoor weather/wind, international travel (e.g. Melbourne opener), or time-zone circadian fatigue.
+        4. If 'is_recommended' is true: Explain why picking this specific team optimizes 18-week Survivor path equity while preserving elite Future Value (FV) assets.
 
-        CANDIDATES:
+        CANDIDATES DATA:
         {json.dumps(week_candidates)}
 
         Return ONLY a JSON array of objects with keys "team" and "reasoning".
@@ -286,29 +210,21 @@ def generate_deep_ai_reasoning(weekly_slates, optimal_path):
       for item in data:
         reasoning_map[(w, item["team"])] = item["reasoning"]
     except Exception as e:
-      print(f"Notice during AI generation for Week {w}: {e}")
-      for c in weekly_slates.get(w, []):
-        if c.get("spread") is not None and (w, c["team"]) not in reasoning_map:
-          reasoning_map[(w, c["team"])] = generate_game_synthesis(
-              c["team"],
-              c.get("opponent", "OPP"),
-              c.get("home", True),
-              c["spread"],
-              c["mod_prob"],
-              w,
-              (c["team"] == rec),
-          )
+      print(
+          f"AI generation notice for Week {w}: {e}. Leaving reasoning blank for"
+          " failed items."
+      )
 
-  # Leave unpriced future games completely blank
+  # Leave unpriced future lookahead games completely blank
   for w in range(1, WEEKS + 1):
     for c in weekly_slates.get(w, []):
-      if c.get("spread") is None:
+      if (w, c["team"]) not in reasoning_map:
         reasoning_map[(w, c["team"])] = ""
 
   return reasoning_map
 
 
-# --- 2. FETCH SCHEDULE & SPORTSBOOK ODDS ---
+# --- 2. FETCH OFFICIAL SCHEDULE & SPORTSBOOK ODDS ---
 def fetch_online_schedule():
   url = (
       "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
@@ -330,7 +246,7 @@ def fetch_online_schedule():
   except Exception as e:
     print(f"Notice during schedule fetch: {e}")
 
-  # Verified 2026 Regular Season Kickoff slate
+  # Verified Official 2026 Regular Season Schedule
   if not schedule_by_week[1]:
     schedule_by_week[1] = [
         {"home_team": "LAC", "away_team": "ARI"},
@@ -679,7 +595,7 @@ def sync_to_google_sheets():
             else ""
         )
 
-        # Retrieve specific multi-factor reasoning
+        # Retrieve unique reasoning or leave empty
         reasoning = ai_reasonings.get((w, cand["team"]), "")
 
         matrix[cand_row_num - 1][4] = team_display
@@ -767,7 +683,7 @@ def sync_to_google_sheets():
   if batch_formats:
     sheet.batch_format(batch_formats)
 
-  print("Success: Google Sheet updated cleanly with granular synthesis.")
+  print("Success: Google Sheet updated with non-repeating synthesis.")
 
 
 if __name__ == "__main__":
