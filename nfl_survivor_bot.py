@@ -305,13 +305,13 @@ def sync_to_google_sheets():
     
     total_grid_rows = 1 + (WEEKS * 6)
     
-    # Strip any old background colors or bold styles across the grid
+    # Strip any old background colors across the grid
     sheet.format(f"A1:J{total_grid_rows + 20}", {
         "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
         "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
     })
 
-    # Unmerge any previous banners
+    # Unmerge any previous weekly banners
     try:
         sheet.unmerge_cells(f"A1:J{total_grid_rows + 20}")
     except Exception:
@@ -395,10 +395,10 @@ def sync_to_google_sheets():
 
     # 8. Formatting
 
-    # Row 1 Header: Dark Navy Blue (#102A43)
+    # Row 1 Header: Medium Blue (#1E56A0) with bold white text
     sheet.format("A1:J1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
-        "backgroundColor": {"red": 0.06, "green": 0.16, "blue": 0.26},
+        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
         "horizontalAlignment": "CENTER"
     })
 
@@ -413,19 +413,19 @@ def sync_to_google_sheets():
     sheet.format(f"E2:I{total_grid_rows}", {"horizontalAlignment": "CENTER"})
     sheet.format(f"J2:J{total_grid_rows}", {"horizontalAlignment": "LEFT"})
 
-    # Merged Weekly Headers: Medium Dark Blue (#243B53)
+    # Merged Weekly Headers: Light Blue (#D4E6F1) with bold dark navy text
     batch_formats = []
     for rng in merge_ranges:
         batch_formats.append({
             "range": rng,
             "format": {
-                "backgroundColor": {"red": 0.14, "green": 0.23, "blue": 0.33},
-                "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                "backgroundColor": {"red": 0.83, "green": 0.90, "blue": 0.95},
+                "textFormat": {"bold": True, "foregroundColor": {"red": 0.05, "green": 0.16, "blue": 0.28}},
                 "horizontalAlignment": "CENTER"
             }
         })
 
-    # Recommended Pick Rows: Soft Bright Yellow
+    # Recommended Pick Rows: Soft Bright Yellow (#FFF28C)
     for r_idx in yellow_rows:
         batch_formats.append({
             "range": f"E{r_idx}:J{r_idx}",
@@ -438,7 +438,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet refreshed cleanly with zero lingering color artifacts.")
+    print("Success: Google Sheet updated with Medium Blue top row and Light Blue weekly header rows.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
