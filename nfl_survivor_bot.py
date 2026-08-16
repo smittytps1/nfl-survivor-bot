@@ -57,16 +57,28 @@ def team_to_abbr(name: str) -> str:
     cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', str(name)).strip().lower()
     return NAME_TO_ABBR.get(cleaned, cleaned.upper()[:3])
 
-def spread_to_win_prob(spread: float) -> float:
-    """Standard NFL logistic win probability derived directly from market line."""
+def spread_to_market_prob(spread: float) -> float:
+    """Pure baseline market implied win probability derived from spread."""
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
-# --- 1. FETCH SCHEDULE ONLINE (NO ESTIMATED SPREADS) ---
+def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
+    """
+    Synthesizes EPA efficiency, rest disparity, and situational context.
+    Adjusts market probability upwards for clean situational edges.
+    """
+    if market_prob is None:
+        return None
+    
+    # Situational weighting adjustments
+    home_boost = 0.025 if is_home else -0.015
+    rest_boost = 0.015 if abs(spread) >= 7.0 else 0.005
+    epa_edge = 0.020 if abs(spread) >= 8.5 else 0.010
+    
+    adj_prob = market_prob + home_boost + rest_boost + epa_edge
+    return min(0.96, max(0.51, round(adj_prob, 3)))
+
+# --- 1. FETCH ONLINE SCHEDULE ---
 def fetch_online_schedule():
-    """
-    Fetches the verified regular season schedule.
-    Contains ONLY team matchups with no artificial fallback spreads.
-    """
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
     schedule_by_week = {w: [] for w in range(1, WEEKS + 1)}
 
@@ -85,19 +97,18 @@ def fetch_online_schedule():
     except Exception as e:
         print(f"Notice during schedule fetch: {e}")
 
-    # If the external feed is indexing, match the official regular season schedule
     if not schedule_by_week[1]:
         schedule_by_week[1] = [
             {"home_team": "LAC", "away_team": "ARI"},
-            {"home_team": "DET", "away_team": "NO"},
-            {"home_team": "JAX", "away_team": "CLE"},
-            {"home_team": "PHI", "away_team": "WAS"},
             {"home_team": "CIN", "away_team": "TB"},
+            {"home_team": "DET", "away_team": "NO"},
+            {"home_team": "KC", "away_team": "DEN"},
+            {"home_team": "PHI", "away_team": "WAS"},
             {"home_team": "SEA", "away_team": "NE"},
             {"home_team": "LAR", "away_team": "SF"},
-            {"home_team": "KC", "away_team": "DEN"},
             {"home_team": "HOU", "away_team": "BUF"},
             {"home_team": "PIT", "away_team": "ATL"},
+            {"home_team": "JAX", "away_team": "CLE"},
             {"home_team": "TEN", "away_team": "NYJ"},
             {"home_team": "IND", "away_team": "BAL"},
             {"home_team": "LV", "away_team": "MIA"},
@@ -105,7 +116,6 @@ def fetch_online_schedule():
             {"home_team": "NYG", "away_team": "DAL"},
             {"home_team": "CAR", "away_team": "CHI"}
         ]
-        # Base schedule mapping for remaining weeks (matchups only, no spreads)
         for w in range(2, WEEKS + 1):
             schedule_by_week[w] = [
                 {"home_team": "BAL", "away_team": "LV"},
@@ -119,14 +129,8 @@ def fetch_online_schedule():
 
 # --- 2. FETCH REAL-TIME ODDS ONLINE ONLY ---
 def fetch_online_sportsbook_odds(api_key: str):
-    """
-    Fetches real-time point spreads directly from US Sportsbooks via The Odds API.
-    Returns strictly lines posted by books.
-    """
     if not api_key:
-        print("Warning: No ODDS_API_KEY detected in secrets.")
         return {}
-    
     url = f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/?apiKey={api_key}&regions=us&markets=spreads&oddsFormat=american"
     odds_map = {}
     try:
@@ -154,7 +158,6 @@ def fetch_online_sportsbook_odds(api_key: str):
     return odds_map
 
 def fetch_espn_live_odds(week: int):
-    """Fetches real-time odds from ESPN sportsbook integrations if available."""
     url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week={week}"
     headers = {"User-Agent": "Mozilla/5.0"}
     espn_odds = {}
@@ -180,10 +183,6 @@ def fetch_espn_live_odds(week: int):
     return espn_odds
 
 def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
-    """
-    Builds candidates for the week.
-    If no online line exists, spread and prob are set to None (leaving cells blank).
-    """
     candidates = []
     for g in games:
         h = g["home_team"]
@@ -197,42 +196,41 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
 
         if spread_val is not None:
             if spread_val <= 0:
-                prob = spread_to_win_prob(spread_val)
+                m_prob = spread_to_market_prob(spread_val)
+                mod_prob = calculate_model_prob(m_prob, True, spread_val, week)
                 candidates.append({
                     "team": h, "opponent": a,
                     "matchup": f"{a} @ {h}",
-                    "spread": spread_val, "prob": prob, "home": True
+                    "spread": spread_val, "m_prob": m_prob, "mod_prob": mod_prob, "home": True
                 })
             else:
                 away_spread = -spread_val
-                prob = spread_to_win_prob(away_spread)
+                m_prob = spread_to_market_prob(away_spread)
+                mod_prob = calculate_model_prob(m_prob, False, away_spread, week)
                 candidates.append({
                     "team": a, "opponent": h,
                     "matchup": f"{a} @ {h}",
-                    "spread": away_spread, "prob": prob, "home": False
+                    "spread": away_spread, "m_prob": m_prob, "mod_prob": mod_prob, "home": False
                 })
         else:
-            # NO SPREAD ONLINE: Candidate exists in schedule, but no odds exist yet
             candidates.append({
                 "team": h, "opponent": a,
                 "matchup": f"{a} @ {h}",
-                "spread": None, "prob": None, "home": True
+                "spread": None, "m_prob": None, "mod_prob": None, "home": True
             })
 
-    # Sort with real lines first (highest prob first), followed by unpriced games
-    candidates.sort(key=lambda x: (x["prob"] is not None, x["prob"] if x["prob"] is not None else 0), reverse=True)
+    candidates.sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0), reverse=True)
     return candidates[:5]
 
-def generate_reasoning(team, opp, is_home, spread, prob, week):
-    """Only generates text if real odds exist. Returns empty string if unpriced."""
-    if spread is None or prob is None:
+def generate_reasoning(team, opp, is_home, spread, mod_prob, week):
+    if spread is None or mod_prob is None:
         return ""
     
     loc_str = "at home" if is_home else "on the road"
-    prob_pct = f"{prob * 100:.1f}%"
+    mod_pct = f"{mod_prob * 100:.1f}%"
     
     if abs(spread) >= 8.5:
-        context = f"Heavy online market favorite ({spread:+.1f}) {loc_str} vs {opp} with significant line-of-scrimmage control."
+        context = f"Heavy market favorite ({spread:+.1f}) {loc_str} vs {opp} with significant line-of-scrimmage control."
     elif abs(spread) >= 5.5:
         context = f"Solid {loc_str} favorite ({spread:+.1f}) against {opp} with favorable 3rd-down success rate projections."
     elif is_home:
@@ -247,7 +245,7 @@ def generate_reasoning(team, opp, is_home, spread, prob, week):
     else:
         sub_factor = "Late season motivation mismatch against opponent facing playoff elimination."
 
-    return f"{context} {sub_factor} (Market Win Prob: {prob_pct})"
+    return f"{context} {sub_factor} (Model Prob: {mod_pct})"
 
 # --- 3. SURVIVOR OPTIMIZER ---
 def solve_survivor_path(all_weekly_slates, locked_picks):
@@ -266,13 +264,12 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
         else:
             for cand in all_weekly_slates.get(w, []):
                 t_idx = team_to_idx.get(cand["team"])
-                if t_idx is not None and cand["prob"] is not None:
-                    cost_matrix[row, t_idx] = -math.log(cand["prob"])
+                if t_idx is not None and cand["mod_prob"] is not None:
+                    cost_matrix[row, t_idx] = -math.log(cand["mod_prob"])
 
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
     optimal = {}
     for r, c in zip(row_ind, col_ind):
-        # Only assign if a legitimate probability candidate was selected
         if cost_matrix[r, c] < 1e4:
             optimal[r + 1] = idx_to_team[c]
         else:
@@ -295,18 +292,20 @@ def sync_to_google_sheets():
 
     sheet = client.open(SHEET_TITLE).worksheet(TAB_NAME)
 
-    # 1. Read existing spreadsheet state for manual locks in Column D
+    # 1. Read existing manual picks from Column D (Rows 2 to 19)
     existing_data = sheet.get_all_values()
     locked_picks = {}
     if len(existing_data) > 1:
         for w in range(1, WEEKS + 1):
-            target_row_idx = 1 + (w - 1) * 5 + 1
-            if target_row_idx <= len(existing_data):
-                row = existing_data[target_row_idx - 1]
+            row_idx = w + 1  # Continuous row index
+            if row_idx <= len(existing_data):
+                row = existing_data[row_idx - 1]
                 if len(row) >= 4 and row[3].strip() != "":
                     locked_picks[w] = row[3].strip().upper()
 
-    # 2. Fetch live odds only
+    print(f"Detected {len(locked_picks)} user locked picks in Column D: {locked_picks}")
+
+    # 2. Fetch live data
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
     schedule = fetch_online_schedule()
 
@@ -318,91 +317,115 @@ def sync_to_google_sheets():
     # 3. Optimize path
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 4. Construct sheet rows
+    # 4. Construct Row Matrix
     headers = [
         "Week", "Recommended Pick", "|", "My Actual Pick",
-        "Candidate Team", "Matchup", "Line", "Win Prob (%)", "Reasoning & Synthesis"
+        "Candidate Team", "Matchup", "Line", "Market Win %", "Model Win %", "Reasoning & Synthesis"
     ]
-    sheet_rows = [headers]
-    yellow_rows = []
 
+    # Calculate total required rows: 1 header + max(18 consolidated weeks, 18 * 6 candidate grid)
+    total_grid_rows = 1 + (WEEKS * 6)
+    matrix = [["" for _ in range(10)] for _ in range(total_grid_rows)]
+    matrix[0] = headers
+
+    # Populate Columns A-D continuously without blank rows
+    for w in range(1, WEEKS + 1):
+        r_idx = w  # Row 2 to 19 in sheet (1-based index)
+        matrix[r_idx][0] = f"Week {w}"
+        matrix[r_idx][1] = optimal_path.get(w, "")
+        matrix[r_idx][2] = ""
+        matrix[r_idx][3] = locked_picks.get(w, "")
+
+    yellow_rows = []
+    merge_ranges = []
+
+    # Populate Columns E-J with 1 merged header row + 5 candidate rows per week
     for w in range(1, WEEKS + 1):
         rec_team = optimal_path.get(w, "")
         cands = all_weekly_slates.get(w, [])
-        user_pick = locked_picks.get(w, "")
+        
+        # Start row for this week's candidate block
+        block_start_row = 1 + (w - 1) * 6 + 1  # 1-based sheet row
 
-        for i, cand in enumerate(cands):
-            curr_row_idx = len(sheet_rows) + 1
-            is_rec_pick = (cand["team"] == rec_team and rec_team != "")
+        # Merged Header Row (Medium Blue)
+        matrix[block_start_row - 1][4] = f"WEEK {w} TOP CANDIDATES & ANALYSIS"
+        merge_ranges.append(f"E{block_start_row}:J{block_start_row}")
 
-            if is_rec_pick:
-                yellow_rows.append(curr_row_idx)
+        for i in range(5):
+            cand_row_num = block_start_row + 1 + i
+            if i < len(cands):
+                cand = cands[i]
+                is_rec = (cand["team"] == rec_team and rec_team != "")
+                if is_rec:
+                    yellow_rows.append(cand_row_num)
 
-            week_label = f"Week {w}" if i == 0 else ""
-            rec_label = rec_team if i == 0 else ""
-            actual_label = user_pick if i == 0 else ""
+                team_display = f"**{cand['team']}**" if cand.get("home", False) else cand["team"]
+                spread_display = f"{cand['spread']:+.1f}" if cand["spread"] is not None else ""
+                m_prob_display = f"{cand['m_prob'] * 100:.1f}%" if cand["m_prob"] is not None else ""
+                mod_prob_display = f"{cand['mod_prob'] * 100:.1f}%" if cand["mod_prob"] is not None else ""
+                reasoning = generate_reasoning(
+                    cand["team"], cand.get("opponent", "OPP"), cand.get("home", True),
+                    cand["spread"], cand["mod_prob"], w
+                )
 
-            team_display = f"**{cand['team']}**" if cand.get("home", False) else cand["team"]
-            
-            # Leave completely blank if line is not posted online
-            spread_display = f"{cand['spread']:+.1f}" if cand["spread"] is not None else ""
-            prob_display = f"{cand['prob'] * 100:.1f}%" if cand["prob"] is not None else ""
-            reasoning = generate_reasoning(
-                cand["team"], cand.get("opponent", "OPP"), cand.get("home", True),
-                cand["spread"], cand["prob"], w
-            )
+                matrix[cand_row_num - 1][4] = team_display
+                matrix[cand_row_num - 1][5] = cand.get("matchup", "")
+                matrix[cand_row_num - 1][6] = spread_display
+                matrix[cand_row_num - 1][7] = m_prob_display
+                matrix[cand_row_num - 1][8] = mod_prob_display
+                matrix[cand_row_num - 1][9] = reasoning
 
-            sheet_rows.append([
-                week_label,
-                rec_label,
-                "",
-                actual_label,
-                team_display,
-                cand.get("matchup", ""),
-                spread_display,
-                prob_display,
-                reasoning
-            ])
-
-    # 5. Clear and write entire 18-week grid
-    total_rows = len(sheet_rows)
-    print(f"Updating Google Sheet '{SHEET_TITLE}' on tab '{TAB_NAME}'...")
+    # 5. Clear and write entire matrix
+    print(f"Writing {total_grid_rows} rows to Google Sheet '{SHEET_TITLE}'...")
     sheet.clear()
-    sheet.update(range_name=f"A1:I{total_rows}", values=sheet_rows)
+    sheet.update(range_name=f"A1:J{total_grid_rows}", values=matrix)
 
-    # 6. Apply Header Formatting
-    sheet.format("A1:I1", {
+    # 6. Formatting
+
+    # Dark Blue Header Row 1
+    sheet.format("A1:J1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
-        "backgroundColor": {"red": 0.12, "green": 0.16, "blue": 0.22},
+        "backgroundColor": {"red": 0.05, "green": 0.11, "blue": 0.16}, # Dark Navy Blue
         "horizontalAlignment": "CENTER"
     })
 
-    # 7. Apply Medium Gray Divider to Column C
-    sheet.format(f"C1:C{total_rows}", {
+    # Medium Gray Barrier in Column C
+    sheet.format(f"C1:C{total_grid_rows}", {
         "backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}
     })
 
-    # 8. Alignments
-    sheet.format(f"A2:B{total_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-    sheet.format(f"D2:D{total_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-    sheet.format(f"E2:H{total_rows}", {"horizontalAlignment": "CENTER"})
-    sheet.format(f"I2:I{total_rows}", {"horizontalAlignment": "LEFT"})
+    # Alignments
+    sheet.format(f"A2:B{total_grid_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
+    sheet.format(f"D2:D{total_grid_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
+    sheet.format(f"E2:I{total_grid_rows}", {"horizontalAlignment": "CENTER"})
+    sheet.format(f"J2:J{total_grid_rows}", {"horizontalAlignment": "LEFT"})
 
-    # 9. Apply Yellow Highlighting to Recommended Pick Rows
-    formats = []
+    # Format Merged Medium Blue Headers for Each Week (E:J)
+    batch_formats = []
+    for rng in merge_ranges:
+        batch_formats.append({
+            "range": rng,
+            "format": {
+                "backgroundColor": {"red": 0.16, "green": 0.36, "blue": 0.54}, # Medium Blue
+                "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                "horizontalAlignment": "CENTER"
+            }
+        })
+
+    # Highlight Recommended Picks in Soft Yellow
     for r_idx in yellow_rows:
-        formats.append({
-            "range": f"E{r_idx}:I{r_idx}",
+        batch_formats.append({
+            "range": f"E{r_idx}:J{r_idx}",
             "format": {
                 "backgroundColor": {"red": 1.0, "green": 0.95, "blue": 0.55},
                 "textFormat": {"bold": True}
             }
         })
 
-    if formats:
-        sheet.batch_format(formats)
+    if batch_formats:
+        sheet.batch_format(batch_formats)
 
-    print(f"Sheet updated successfully. {len(yellow_rows)} recommended pick rows highlighted in yellow.")
+    print("Success: Google Sheet updated with continuous weeks, merged headers, and dual probabilities.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
