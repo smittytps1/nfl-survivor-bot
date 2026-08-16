@@ -1,4 +1,7 @@
 requests
-google-genai
+pandas
+numpy
+scipy
 gspread
 google-auth
+google-genai
