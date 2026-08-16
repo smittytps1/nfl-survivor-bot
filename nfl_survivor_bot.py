@@ -9,6 +9,7 @@ import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
 from google import genai
+from google.genai import types
 from scipy.optimize import linear_sum_assignment
 
 # --- SPREADSHEET CONFIGURATION ---
@@ -70,60 +71,78 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float) -> fl
     adj_prob = market_prob + home_boost + rest_boost + epa_edge
     return min(0.96, max(0.51, round(adj_prob, 3)))
 
-# --- 1. REAL-TIME AI REASONING GENERATOR (GEMINI) ---
-def generate_ai_reasoning_batch(weekly_slates_to_analyze, optimal_path):
+# --- 1. DEEP SEARCH-GROUNDED AI REASONING ENGINE ---
+def generate_deep_ai_reasoning(weekly_slates, optimal_path):
+    """
+    Executes deep multi-factor quantitative NFL reasoning using Gemini
+    with Google Search Grounding to evaluate unique match facts.
+    """
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_key:
-        print("Notice: No GEMINI_API_KEY detected. Using fallback situational generator.")
+        print("Warning: GEMINI_API_KEY missing. Reasonings will be omitted.")
         return {}
 
     client = genai.Client(api_key=gemini_key)
     
-    analysis_payload = []
-    for w, cands in weekly_slates_to_analyze.items():
-        rec = optimal_path.get(w, "")
-        for c in cands:
+    candidates_list = []
+    for w in range(1, WEEKS + 1):
+        rec_team = optimal_path.get(w, "")
+        for c in weekly_slates.get(w, []):
             if c.get("spread") is not None:
-                analysis_payload.append({
+                candidates_list.append({
                     "week": w,
                     "team": c["team"],
                     "opponent": c["opponent"],
-                    "is_home": c["home"],
-                    "is_recommended": (c["team"] == rec),
-                    "line": c["spread"]
+                    "matchup": c["matchup"],
+                    "spread": c["spread"],
+                    "is_recommended": (c["team"] == rec_team)
                 })
 
-    if not analysis_payload:
+    if not candidates_list:
         return {}
 
     prompt = f"""
-    You are an elite quantitative NFL analyst and Survivor Pool strategist.
-    Generate a concise, deeply insightful, multi-factor analytical reasoning string (25-45 words) for each NFL matchup candidate below.
+    You are an elite NFL quantitative analyst and 18-week Survivor Pool grandmaster.
+    Generate a 100% ORIGINAL, highly specific, in-depth analytical synthesis (30-50 words) for EVERY candidate below.
+
+    ANALYTICAL REQUIREMENTS (NO BOILERPLATE, NO GENERIC PHRASES):
+    1. DO NOT mention the spread or point line number anywhere in your text.
+    2. Deep Matchup Metrics: Cite specific schematic & personnel clashes (e.g., offensive line Pass Block Win Rate vs pass-rush pressure rate, net passing/rushing EPA differentials, man/zone coverage vulnerabilities, red zone touchdown efficiency).
+    3. Environmental & Situational Spot: Factor in crowd acoustics/dome speed, cold/wind conditions, rest advantage (mini-bye, travel recovery), and time-zone circadian fatigue (West Coast teams traveling to 1:00 PM ET games).
+    4. 18-Week Survivor Game Theory: If 'is_recommended' is true, explicitly justify why taking this team in this exact week maximizes cumulative 18-week survival equity while preserving elite Future Value (FV) assets for high-attrition late-season bottlenecks.
     
-    STRICT RULES:
-    1. DO NOT repeat the point line or odds number in the text (it is already in a separate column).
-    2. Synthesize specific team identities: Passing/Rushing EPA differentials, offensive line pass-protection vs pass rush win rates, travel/time zone circadian impacts, stadium environment (weather/wind/dome), and rest disparities.
-    3. If 'is_recommended' is true, include a brief game-theory Survivor strategy note on Future Value (FV) preservation or leveraging peak season equity.
-    4. Return strictly a JSON array of objects with keys: "week", "team", "reasoning".
-    
-    CANDIDATES DATA:
-    {json.dumps(analysis_payload)}
+    INPUT CANDIDATES:
+    {json.dumps(candidates_list)}
+
+    Return strictly a JSON array of objects formatted as:
+    [
+      {{"week": 1, "team": "LAC", "reasoning": "Deep specific synthesized analysis..."}}
+    ]
     """
 
     try:
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=prompt
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                temperature=0.2
+            )
         )
-        clean_text = response.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(clean_text)
-        reasoning_map = {(d["week"], d["team"]): d["reasoning"] for d in data}
-        return reasoning_map
+        text = response.text.strip()
+        json_match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
+        if json_match:
+            clean_json = json_match.group(0)
+        else:
+            clean_json = text.replace("```json", "").replace("```", "").strip()
+
+        data = json.loads(clean_json)
+        return {(d["week"], d["team"]): d["reasoning"] for d in data}
     except Exception as e:
-        print(f"Notice during AI reasoning generation: {e}")
+        print(f"Error during deep AI reasoning generation: {e}")
         return {}
 
-# --- 2. FETCH SCHEDULE & ODDS ONLINE ---
+# --- 2. FETCH OFFICIAL SCHEDULE & LIVE SPORTSBOOK ODDS ---
 def fetch_online_schedule():
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
     schedule_by_week = {w: [] for w in range(1, WEEKS + 1)}
@@ -141,13 +160,14 @@ def fetch_online_schedule():
                         "away_team": team_to_abbr(row['away_team'])
                     })
     except Exception as e:
-        print(f"Notice during online schedule query: {e}")
+        print(f"Notice during schedule fetch: {e}")
 
+    # Official 2026 NFL Regular Season Schedule matrix
     if not schedule_by_week[1]:
         schedule_by_week[1] = [
             {"home_team": "LAC", "away_team": "ARI"},
-            {"home_team": "CIN", "away_team": "TB"},
             {"home_team": "DET", "away_team": "NO"},
+            {"home_team": "CIN", "away_team": "TB"},
             {"home_team": "KC", "away_team": "DEN"},
             {"home_team": "PHI", "away_team": "WAS"},
             {"home_team": "SEA", "away_team": "NE"},
@@ -199,7 +219,7 @@ def fetch_online_sportsbook_odds(api_key: str):
                 if best_spread is not None:
                     odds_map[(h_abbr, a_abbr)] = best_spread
     except Exception as e:
-        print(f"Notice during Odds API query: {e}")
+        print(f"Notice during live Odds API query: {e}")
     return odds_map
 
 def fetch_espn_live_odds(week: int):
@@ -325,8 +345,8 @@ def sync_to_google_sheets():
 
     print(f"Detected {len(locked_picks)} user locked picks in Column D: {locked_picks}")
 
-    # 2. Reset Sheet Data, Colors, and Merges
-    print("Clearing data and formatting...")
+    # 2. Reset Sheet Data, Colors, and Merges Completely
+    print("Clearing data, backgrounds, and cell formatting...")
     sheet.clear()
     
     total_grid_rows = 1 + (WEEKS * 6)
@@ -341,7 +361,7 @@ def sync_to_google_sheets():
     except Exception:
         pass
 
-    # 3. Fetch live data
+    # 3. Fetch live odds & schedules
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
     schedule = fetch_online_schedule()
 
@@ -353,8 +373,8 @@ def sync_to_google_sheets():
     # 4. Dynamically re-optimize path around user locks
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 5. Generate AI reasoning for candidates
-    ai_reasoning_map = generate_ai_reasoning_batch(all_weekly_slates, optimal_path)
+    # 5. Generate Search-Grounded Deep AI Synthesis Reasoning
+    ai_reasonings = generate_deep_ai_reasoning(all_weekly_slates, optimal_path)
 
     # 6. Calculate Cumulative Survival Percentage based on Model Win %
     cum_prob = 1.0
@@ -419,11 +439,8 @@ def sync_to_google_sheets():
                 m_prob_display = f"{cand['m_prob'] * 100:.1f}%" if cand["m_prob"] is not None else ""
                 mod_prob_display = f"{cand['mod_prob'] * 100:.1f}%" if cand["mod_prob"] is not None else ""
                 
-                # Fetch AI reasoning or apply context fallback
-                reasoning = ai_reasoning_map.get((w, cand["team"]), "")
-                if not reasoning and cand["spread"] is not None:
-                    loc = "home" if cand.get("home", False) else "road"
-                    reasoning = f"Significant line-of-scrimmage and EPA advantage as {loc} favorite vs {cand.get('opponent', 'opponent')}."
+                # Fetch Deep AI synthesized reasoning
+                reasoning = ai_reasonings.get((w, cand["team"]), "")
 
                 matrix[cand_row_num - 1][4] = team_display
                 matrix[cand_row_num - 1][5] = cand.get("matchup", "")
@@ -488,7 +505,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet refreshed cleanly with dynamic AI-generated synthesis reasoning.")
+    print("Success: Google Sheet refreshed cleanly with deep, non-repetitive search-grounded reasoning.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
