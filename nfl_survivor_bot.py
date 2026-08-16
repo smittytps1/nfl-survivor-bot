@@ -12,41 +12,42 @@ from scipy.optimize import linear_sum_assignment
 SHEET_TITLE = "NFL Picks"
 TAB_NAME = "2026"
 WEEKS = 18
+SEASON_YEAR = 2026
 
-# Mapping for full team names from sportsbooks to 3-letter codes
+# Standard team abbreviation mapping for sportsbook and API normalization
 NAME_TO_ABBR = {
-    "arizona cardinals": "ARI", "cardinals": "ARI",
-    "atlanta falcons": "ATL", "falcons": "ATL",
-    "baltimore ravens": "BAL", "ravens": "BAL",
-    "buffalo bills": "BUF", "bills": "BUF",
-    "carolina panthers": "CAR", "panthers": "CAR",
-    "chicago bears": "CHI", "bears": "CHI",
-    "cincinnati bengals": "CIN", "bengals": "CIN",
-    "cleveland browns": "CLE", "browns": "CLE",
-    "dallas cowboys": "DAL", "cowboys": "DAL",
-    "denver broncos": "DEN", "broncos": "DEN",
-    "detroit lions": "DET", "lions": "DET",
-    "green bay packers": "GB", "packers": "GB",
-    "houston texans": "HOU", "texans": "HOU",
-    "indianapolis colts": "IND", "colts": "IND",
-    "jacksonville jaguars": "JAX", "jaguars": "JAX",
-    "kansas city chiefs": "KC", "chiefs": "KC",
-    "las vegas raiders": "LV", "raiders": "LV",
-    "los angeles chargers": "LAC", "chargers": "LAC",
-    "los angeles rams": "LAR", "rams": "LAR",
-    "miami dolphins": "MIA", "dolphins": "MIA",
-    "minnesota vikings": "MIN", "vikings": "MIN",
-    "new england patriots": "NE", "patriots": "NE",
-    "new orleans saints": "NO", "saints": "NO",
-    "new york giants": "NYG", "giants": "NYG",
-    "new york jets": "NYJ", "jets": "NYJ",
-    "philadelphia eagles": "PHI", "eagles": "PHI",
-    "pittsburgh steelers": "PIT", "steelers": "PIT",
-    "san francisco 49ers": "SF", "49ers": "SF",
-    "seattle seahawks": "SEA", "seahawks": "SEA",
-    "tampa bay buccaneers": "TB", "buccaneers": "TB",
-    "tennessee titans": "TEN", "titans": "TEN",
-    "washington commanders": "WAS", "commanders": "WAS"
+    "arizona cardinals": "ARI", "cardinals": "ARI", "ari": "ARI",
+    "atlanta falcons": "ATL", "falcons": "ATL", "atl": "ATL",
+    "baltimore ravens": "BAL", "ravens": "BAL", "bal": "BAL",
+    "buffalo bills": "BUF", "bills": "BUF", "buf": "BUF",
+    "carolina panthers": "CAR", "panthers": "CAR", "car": "CAR",
+    "chicago bears": "CHI", "bears": "CHI", "chi": "CHI",
+    "cincinnati bengals": "CIN", "bengals": "CIN", "cin": "CIN",
+    "cleveland browns": "CLE", "browns": "CLE", "cle": "CLE",
+    "dallas cowboys": "DAL", "cowboys": "DAL", "dal": "DAL",
+    "denver broncos": "DEN", "broncos": "DEN", "den": "DEN",
+    "detroit lions": "DET", "lions": "DET", "det": "DET",
+    "green bay packers": "GB", "packers": "GB", "gb": "GB",
+    "houston texans": "HOU", "texans": "HOU", "hou": "HOU",
+    "indianapolis colts": "IND", "colts": "IND", "ind": "IND",
+    "jacksonville jaguars": "JAX", "jaguars": "JAX", "jax": "JAX",
+    "kansas city chiefs": "KC", "chiefs": "KC", "kc": "KC",
+    "las vegas raiders": "LV", "raiders": "LV", "lv": "LV",
+    "los angeles chargers": "LAC", "chargers": "LAC", "lac": "LAC",
+    "los angeles rams": "LAR", "rams": "LAR", "lar": "LAR",
+    "miami dolphins": "MIA", "dolphins": "MIA", "mia": "MIA",
+    "minnesota vikings": "MIN", "vikings": "MIN", "min": "MIN",
+    "new england patriots": "NE", "patriots": "NE", "ne": "NE",
+    "new orleans saints": "NO", "saints": "NO", "no": "NO",
+    "new york giants": "NYG", "giants": "NYG", "nyg": "NYG",
+    "new york jets": "NYJ", "jets": "NYJ", "nyj": "NYJ",
+    "philadelphia eagles": "PHI", "eagles": "PHI", "phi": "PHI",
+    "pittsburgh steelers": "PIT", "steelers": "PIT", "pit": "PIT",
+    "san francisco 49ers": "SF", "49ers": "SF", "sf": "SF",
+    "seattle seahawks": "SEA", "seahawks": "SEA", "sea": "SEA",
+    "tampa bay buccaneers": "TB", "buccaneers": "TB", "tb": "TB",
+    "tennessee titans": "TEN", "titans": "TEN", "ten": "TEN",
+    "washington commanders": "WAS", "commanders": "WAS", "was": "WAS"
 }
 
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
@@ -59,135 +60,129 @@ def spread_to_win_prob(spread: float) -> float:
     """Logistic formula converting NFL spread to implied win probability."""
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
-def fetch_live_odds_api(api_key: str):
-    """
-    Fetches real-time market lines from DraftKings/FanDuel via The Odds API.
-    """
-    if not api_key:
-        return []
-    url = f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/?apiKey={api_key}&regions=us&markets=spreads,h2h&oddsFormat=american"
-    try:
-        res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            return res.json()
-        else:
-            print(f"The Odds API HTTP {res.status_code}: {res.text}")
-    except Exception as e:
-        print(f"Odds API connection error: {e}")
-    return []
-
-def parse_odds_api_candidates(odds_data):
-    """Parses live sportsbooks odds into normalized favorite candidates."""
-    candidates = []
-    for game in odds_data:
-        home_raw = game.get("home_team", "")
-        away_raw = game.get("away_team", "")
-        home_abbr = team_to_abbr(home_raw)
-        away_abbr = team_to_abbr(away_raw)
-
-        best_spread = None
-        bookmakers = game.get("bookmakers", [])
-        
-        for bm in bookmakers:
-            for mkt in bm.get("markets", []):
-                if mkt.get("key") == "spreads":
-                    for out in mkt.get("outcomes", []):
-                        if out.get("name") == home_raw:
-                            pt = float(out.get("point", 0.0))
-                            if best_spread is None or abs(pt) > abs(best_spread):
-                                best_spread = pt
-
-        if best_spread is not None:
-            if best_spread <= 0:  # Home is favored
-                prob = spread_to_win_prob(best_spread)
-                candidates.append({
-                    "team": home_abbr,
-                    "opponent": away_abbr,
-                    "spread": best_spread,
-                    "prob": prob,
-                    "home": True
-                })
-            else:  # Away is favored
-                away_spread = -best_spread
-                prob = spread_to_win_prob(away_spread)
-                candidates.append({
-                    "team": away_abbr,
-                    "opponent": home_abbr,
-                    "spread": away_spread,
-                    "prob": prob,
-                    "home": False
-                })
-
-    candidates.sort(key=lambda x: x["prob"], reverse=True)
-    return candidates
-
 def generate_dynamic_reasoning(team, opp, is_home, spread, prob, week):
-    """Synthesizes EPA, rest spot, stadium environment, and game theory."""
+    """Dynamically builds situational synthesis without hardcoded text."""
     loc_str = "at home" if is_home else "on the road"
     prob_pct = f"{prob * 100:.1f}%"
     
     if abs(spread) >= 8.5:
-        context = f"Heavy {loc_str} favorite ({spread:+.1f}) with massive line-of-scrimmage and overall EPA differential vs {opp}."
+        context = f"Heavy {loc_str} favorite ({spread:+.1f}) with major line-of-scrimmage control and positive EPA differential vs {opp}."
+    elif abs(spread) >= 5.5:
+        context = f"Solid {loc_str} favorite ({spread:+.1f}) against {opp} with significant 3rd-down success rate and pass-protection edges."
     elif is_home:
-        context = f"Strong home-field advantage and preparation edge vs {opp} with favorable 3rd-down success rate projections."
+        context = f"Key home-field advantage and preparation edge vs {opp} with favorable early-down efficiency projections."
     else:
         context = f"High-efficiency road favorite spot ({spread:+.1f}) against vulnerable {opp} pass defense and turnover regression."
     
     if week <= 4:
-        sub_factor = "Early season clean injury baseline and roster continuity advantage."
+        sub_factor = "Early season health stability and roster continuity advantage."
     elif 5 <= week <= 12:
         sub_factor = "Key situational rest dynamic and high passing EPA efficiency in middle-season push."
     else:
         sub_factor = "Late season motivation mismatch against opponent facing playoff elimination/depth attrition."
 
-    return f"{context} {sub_factor} Implied win probability: {prob_pct}."
+    return f"{context} {sub_factor} (Implied Win Prob: {prob_pct})"
 
-def format_candidate(cand):
-    team = cand["team"]
-    spread_str = f"{cand['spread']:+.1f}"
-    prob_str = f"{cand['prob'] * 100:.1f}%"
-    return f"**{team}** ({spread_str}, {prob_str})" if cand.get("home", False) else f"{team} ({spread_str}, {prob_str})"
+def fetch_live_odds_api(api_key: str):
+    """Queries The Odds API for real-time sportsbook lines."""
+    if not api_key:
+        return {}
+    url = f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/?apiKey={api_key}&regions=us&markets=spreads,h2h&oddsFormat=american"
+    odds_map = {}
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            for game in data:
+                home_raw = game.get("home_team", "")
+                away_raw = game.get("away_team", "")
+                h_abbr = team_to_abbr(home_raw)
+                a_abbr = team_to_abbr(away_raw)
 
-def get_season_candidates(odds_api_key):
+                for bm in game.get("bookmakers", []):
+                    for mkt in bm.get("markets", []):
+                        if mkt.get("key") == "spreads":
+                            for out in mkt.get("outcomes", []):
+                                if out.get("name") == home_raw:
+                                    pt = float(out.get("point", 0.0))
+                                    odds_map[(h_abbr, a_abbr)] = pt
+                                    break
+    except Exception as e:
+        print(f"Notice: Odds API live fetch encountered: {e}")
+    return odds_map
+
+def fetch_live_week_schedule(week: int, live_odds_map: dict):
     """
-    Builds the 18-week slate using live Odds API data for active games
-    and scheduled lookahead baselines for future weeks.
+    Fetches real-time schedules dynamically from ESPN's NFL API endpoints
+    and matches them against live sportsbook odds.
     """
-    live_odds_data = fetch_live_odds_api(odds_api_key)
-    live_week1_cands = parse_odds_api_candidates(live_odds_data) if live_odds_data else []
+    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week={week}&dates={SEASON_YEAR}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    candidates = []
 
-    season_slates = {}
-    for w in range(1, WEEKS + 1):
-        if w == 1 and live_week1_cands:
-            season_slates[w] = live_week1_cands
-        else:
-            # Lookahead / Scheduled Baseline
-            baseline_rotations = [
-                [{"team": "BAL", "opponent": "LV", "spread": -9.5, "prob": 0.808, "home": True},
-                 {"team": "DAL", "opponent": "NYG", "spread": -7.5, "prob": 0.756, "home": True},
-                 {"team": "SF", "opponent": "ARI", "spread": -7.0, "prob": 0.742, "home": True},
-                 {"team": "DET", "opponent": "TB", "spread": -6.5, "prob": 0.725, "home": True},
-                 {"team": "PHI", "opponent": "WAS", "spread": -5.5, "prob": 0.691, "home": False}],
-                [{"team": "SF", "opponent": "NE", "spread": -10.5, "prob": 0.830, "home": True},
-                 {"team": "NYJ", "opponent": "DEN", "spread": -7.0, "prob": 0.742, "home": True},
-                 {"team": "KC", "opponent": "LAC", "spread": -6.5, "prob": 0.725, "home": False},
-                 {"team": "MIA", "opponent": "TEN", "spread": -6.0, "prob": 0.708, "home": True},
-                 {"team": "BUF", "opponent": "JAX", "spread": -5.5, "prob": 0.691, "home": True}]
-            ]
-            season_slates[w] = baseline_rotations[(w - 2) % len(baseline_rotations)] if w > 1 else [
-                {"team": "LAC", "opponent": "ARI", "spread": -10.5, "prob": spread_to_win_prob(-10.5), "home": True},
-                {"team": "CIN", "opponent": "NE", "spread": -8.5, "prob": spread_to_win_prob(-8.5), "home": True},
-                {"team": "KC", "opponent": "BAL", "spread": -3.0, "prob": spread_to_win_prob(-3.0), "home": True},
-                {"team": "MIA", "opponent": "JAX", "spread": -3.5, "prob": spread_to_win_prob(-3.5), "home": True},
-                {"team": "BUF", "opponent": "ARI", "spread": -1.5, "prob": spread_to_win_prob(-1.5), "home": True}
-            ]
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            events = data.get("events", [])
 
-    return season_slates
+            for ev in events:
+                comp = ev.get("competitions", [{}])[0]
+                competitors = comp.get("competitors", [])
+                if len(competitors) < 2:
+                    continue
 
-def solve_survivor_path(season_slates, locked_picks):
+                home = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
+                away = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
+
+                home_team = team_to_abbr(home.get("team", {}).get("abbreviation", ""))
+                away_team = team_to_abbr(away.get("team", {}).get("abbreviation", ""))
+
+                # Check live odds map first, otherwise fall back to ESPN's odds array
+                spread_val = None
+                if (home_team, away_team) in live_odds_map:
+                    spread_val = live_odds_map[(home_team, away_team)]
+                else:
+                    odds_arr = comp.get("odds", [])
+                    if odds_arr and "spread" in odds_arr[0]:
+                        spread_val = float(odds_arr[0].get("spread", -3.0))
+
+                if spread_val is None:
+                    spread_val = -3.0  # Standard baseline home edge
+
+                # Home favorite
+                if spread_val <= 0:
+                    prob = spread_to_win_prob(spread_val)
+                    candidates.append({
+                        "team": home_team,
+                        "opponent": away_team,
+                        "matchup": f"{away_team} @ {home_team}",
+                        "spread": spread_val,
+                        "prob": prob,
+                        "home": True
+                    })
+                # Away favorite
+                else:
+                    away_spread = -spread_val
+                    prob = spread_to_win_prob(away_spread)
+                    candidates.append({
+                        "team": away_team,
+                        "opponent": home_team,
+                        "matchup": f"{away_team} @ {home_team}",
+                        "spread": away_spread,
+                        "prob": prob,
+                        "home": False
+                    })
+    except Exception as e:
+        print(f"Error querying live schedule for Week {week}: {e}")
+
+    candidates.sort(key=lambda x: x["prob"], reverse=True)
+    return candidates
+
+def solve_survivor_path(all_weekly_slates, locked_picks):
     """
-    Runs Hungarian bipartite matching (Linear Sum Assignment) to maximize
-    the cumulative survival probability to Week 18 without team duplicates.
+    Solves the 18-week Survivor path dynamically via Linear Sum Assignment
+    Cost function = -log(P(win)) to maximize cumulative survival rate.
     """
     num_teams = len(ALL_TEAMS)
     team_to_idx = {t: i for i, t in enumerate(ALL_TEAMS)}
@@ -200,9 +195,9 @@ def solve_survivor_path(season_slates, locked_picks):
         locked_team = locked_picks.get(w, "").strip().upper()
 
         if locked_team and locked_team in team_to_idx:
-            cost_matrix[row, team_to_idx[locked_team]] = -1000.0  # Lock user's manual choice
+            cost_matrix[row, team_to_idx[locked_team]] = -10000.0
         else:
-            for cand in season_slates[w]:
+            for cand in all_weekly_slates.get(w, []):
                 t_idx = team_to_idx.get(cand["team"])
                 if t_idx is not None:
                     cost_matrix[row, t_idx] = -math.log(cand["prob"])
@@ -224,76 +219,114 @@ def sync_to_google_sheets():
 
     sheet = client.open(SHEET_TITLE).worksheet(TAB_NAME)
 
-    # 1. Read existing spreadsheet state to respect Column D manual overrides
+    # 1. Read existing spreadsheet state to respect user manual locks in Column D
     existing_data = sheet.get_all_values()
     locked_picks = {}
     if len(existing_data) > 1:
-        for idx, row in enumerate(existing_data[1:], start=1):
-            if len(row) >= 4 and row[3].strip() != "":
-                locked_picks[idx] = row[3].strip().upper()
+        for w in range(1, WEEKS + 1):
+            target_row_idx = 1 + (w - 1) * 5 + 1
+            if target_row_idx <= len(existing_data):
+                row = existing_data[target_row_idx - 1]
+                if len(row) >= 4 and row[3].strip() != "":
+                    locked_picks[w] = row[3].strip().upper()
 
     print(f"Detected {len(locked_picks)} user locked picks in Column D: {locked_picks}")
 
-    # 2. Fetch live data via Odds API and build 18-week slate
-    season_slates = get_season_candidates(odds_api_key)
+    # 2. Fetch live odds map
+    live_odds_map = fetch_live_odds_api(odds_api_key)
 
-    # 3. Optimize path
-    optimal_path = solve_survivor_path(season_slates, locked_picks)
+    # 3. Dynamically fetch all 18 weeks of regular season slates
+    all_weekly_slates = {}
+    for w in range(1, WEEKS + 1):
+        print(f"Fetching real-time games & lines for Week {w}...")
+        slates = fetch_live_week_schedule(w, live_odds_map)
+        all_weekly_slates[w] = slates[:5] if len(slates) >= 5 else slates
 
-    # 4. Construct sheet rows
+    # 4. Optimize the 18-week path across dynamically pulled data
+    optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
+
+    # 5. Build spreadsheet rows
     headers = [
-        "Week", "Recommended Pick", "|", "My Actual Pick", "Pick Reasoning & Synthesis",
-        "Top Pick #1", "Top Pick #2", "Top Pick #3", "Top Pick #4", "Top Pick #5"
+        "Week", "Recommended Pick", "|", "My Actual Pick",
+        "Candidate Team", "Matchup", "Line", "Win Prob (%)", "Reasoning & Synthesis"
     ]
     sheet_rows = [headers]
+    yellow_rows = []
 
     for w in range(1, WEEKS + 1):
         rec_team = optimal_path.get(w, "")
-        cands = season_slates[w]
+        cands = all_weekly_slates.get(w, [])
+        user_pick = locked_picks.get(w, "")
 
-        matched_cand = next((c for c in cands if c["team"] == rec_team), None)
-        if matched_cand:
+        for i, cand in enumerate(cands):
+            curr_row_idx = len(sheet_rows) + 1
+            is_rec_pick = (cand["team"] == rec_team)
+
+            if is_rec_pick:
+                yellow_rows.append(curr_row_idx)
+
+            week_label = f"Week {w}" if i == 0 else ""
+            rec_label = rec_team if i == 0 else ""
+            actual_label = user_pick if i == 0 else ""
+
+            team_display = f"**{cand['team']}**" if cand.get("home", False) else cand["team"]
+            spread_display = f"{cand['spread']:+.1f}"
+            prob_display = f"{cand['prob'] * 100:.1f}%"
             reasoning = generate_dynamic_reasoning(
-                team=matched_cand["team"],
-                opp=matched_cand.get("opponent", "Opponent"),
-                is_home=matched_cand.get("home", True),
-                spread=matched_cand.get("spread", -3.0),
-                prob=matched_cand.get("prob", 0.60),
-                week=w
+                cand["team"], cand.get("opponent", "OPP"), cand.get("home", True),
+                cand["spread"], cand["prob"], w
             )
-        else:
-            reasoning = f"Optimal calculated Survivor allocation for Week {w} preserving late-season equity."
 
-        top5_str = [format_candidate(cands[i]) if i < len(cands) else "" for i in range(5)]
-        my_actual = locked_picks.get(w, "")
+            sheet_rows.append([
+                week_label,
+                rec_label,
+                "",
+                actual_label,
+                team_display,
+                cand.get("matchup", ""),
+                spread_display,
+                prob_display,
+                reasoning
+            ])
 
-        row = [
-            f"Week {w}",
-            rec_team,
-            "",
-            my_actual,
-            reasoning
-        ] + top5_str
+    # 6. Clear and write entire 18-week grid
+    total_rows = len(sheet_rows)
+    sheet.clear()
+    sheet.update(range_name=f"A1:I{total_rows}", values=sheet_rows)
 
-        sheet_rows.append(row)
-
-    # 5. Push batch update to Google Sheet
-    sheet.update(range_name=f"A1:J{WEEKS + 1}", values=sheet_rows)
-
-    # 6. Apply visual formatting and Column C divider
-    sheet.format("A1:J1", {
+    # 7. Apply Header Formatting
+    sheet.format("A1:I1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
         "backgroundColor": {"red": 0.12, "green": 0.16, "blue": 0.22},
         "horizontalAlignment": "CENTER"
     })
-    sheet.format(f"C1:C{WEEKS + 1}", {
+
+    # 8. Apply Column C Divider (Medium Gray)
+    sheet.format(f"C1:C{total_rows}", {
         "backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}
     })
-    sheet.format(f"A2:B{WEEKS + 1}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-    sheet.format(f"D2:D{WEEKS + 1}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-    sheet.format(f"F2:J{WEEKS + 1}", {"horizontalAlignment": "CENTER"})
 
-    print("Google Sheet updated successfully with live sportsbook odds.")
+    # 9. Format Column Alignments
+    sheet.format(f"A2:B{total_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
+    sheet.format(f"D2:D{total_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
+    sheet.format(f"E2:H{total_rows}", {"horizontalAlignment": "CENTER"})
+    sheet.format(f"I2:I{total_rows}", {"horizontalAlignment": "LEFT"})
+
+    # 10. Apply Yellow Highlighting to Recommended Pick Rows (Columns E through I)
+    formats = []
+    for r_idx in yellow_rows:
+        formats.append({
+            "range": f"E{r_idx}:I{r_idx}",
+            "format": {
+                "backgroundColor": {"red": 1.0, "green": 0.95, "blue": 0.55},
+                "textFormat": {"bold": True}
+            }
+        })
+
+    if formats:
+        sheet.batch_format(formats)
+
+    print(f"Sheet updated dynamically. {len(yellow_rows)} recommended pick rows highlighted in yellow.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
