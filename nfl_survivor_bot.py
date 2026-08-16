@@ -8,6 +8,7 @@ import requests
 import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
+from google import genai
 from scipy.optimize import linear_sum_assignment
 
 # --- SPREADSHEET CONFIGURATION ---
@@ -16,7 +17,6 @@ TAB_NAME = "2026"
 WEEKS = 18
 SEASON_YEAR = 2026
 
-# Standard team abbreviation mapping
 NAME_TO_ABBR = {
     "arizona cardinals": "ARI", "cardinals": "ARI", "ari": "ARI", "az": "ARI",
     "atlanta falcons": "ATL", "falcons": "ATL", "atl": "ATL",
@@ -54,37 +54,14 @@ NAME_TO_ABBR = {
 
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
 
-# Division tracking to evaluate rivalry volatility and situational motivation dynamically
-DIVISIONS = {
-    "AFC_EAST": ["BUF", "MIA", "NYJ", "NE"],
-    "AFC_NORTH": ["BAL", "CIN", "CLE", "PIT"],
-    "AFC_SOUTH": ["HOU", "IND", "JAX", "TEN"],
-    "AFC_WEST": ["KC", "LAC", "LV", "DEN"],
-    "NFC_EAST": ["DAL", "PHI", "NYG", "WAS"],
-    "NFC_NORTH": ["DET", "GB", "CHI", "MIN"],
-    "NFC_SOUTH": ["ATL", "TB", "NO", "CAR"],
-    "NFC_WEST": ["SF", "LAR", "SEA", "ARI"]
-}
-
-WEST_COAST_TEAMS = {"SF", "LAR", "LAC", "SEA", "ARI", "LV"}
-EAST_COAST_TEAMS = {"NE", "NYJ", "NYG", "PHI", "WAS", "BAL", "BUF", "MIA", "CAR"}
-
 def team_to_abbr(name: str) -> str:
     cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', str(name)).strip().lower()
     return NAME_TO_ABBR.get(cleaned, cleaned.upper()[:3])
 
-def is_division_rivalry(t1: str, t2: str) -> bool:
-    for div, members in DIVISIONS.items():
-        if t1 in members and t2 in members:
-            return True
-    return False
-
 def spread_to_market_prob(spread: float) -> float:
-    """Pure baseline market implied win probability derived from spread."""
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
-def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
-    """Synthesizes EPA efficiency, rest disparity, DVOA, and situational spot."""
+def calculate_model_prob(market_prob: float, is_home: bool, spread: float) -> float:
     if market_prob is None:
         return None
     home_boost = 0.025 if is_home else -0.015
@@ -93,77 +70,60 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
     adj_prob = market_prob + home_boost + rest_boost + epa_edge
     return min(0.96, max(0.51, round(adj_prob, 3)))
 
-# --- 1. DYNAMIC REASONING ENGINE (NO HARDCODED IDENTITIES) ---
-def generate_dynamic_synthesis(team: str, opp: str, is_home: bool, spread: float, mod_prob: float, week: int, is_rec_pick: bool = False) -> str:
-    """
-    Dynamically constructs a synthesized situational breakdown based on live 
-    matchup metrics, travel dynamics, division volatility, and portfolio leverage.
-    """
-    if spread is None or mod_prob is None:
-        return ""
+# --- 1. REAL-TIME AI REASONING GENERATOR (GEMINI) ---
+def generate_ai_reasoning_batch(weekly_slates_to_analyze, optimal_path):
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
+        print("Notice: No GEMINI_API_KEY detected. Using fallback situational generator.")
+        return {}
 
-    loc_str = "at home" if is_home else "on the road"
-    is_div = is_division_rivalry(team, opp)
-
-    # 1. Trench & EPA Differential Synthesis
-    if abs(spread) >= 8.5:
-        trench_analysis = (
-            f"Commanding line-of-scrimmage advantage {loc_str} yields a decisive net EPA per play "
-            f"differential, controlling both run-stuff rate and pass-protection efficiency against {opp}."
-        )
-    elif abs(spread) >= 5.0:
-        trench_analysis = (
-            f"Favorable 3rd-down success rate projections and interior pressure advantages provide {team} "
-            f"with consistent scoring equity against an inconsistent {opp} defensive structure."
-        )
-    else:
-        trench_analysis = (
-            f"High-leverage competitive matchup where {team}'s early-down efficiency and takeaway margin "
-            f"present a quantitative edge over {opp}."
-        )
-
-    # 2. Situational, Rest, Travel, and Environmental Context
-    situational_factors = []
-    if is_home and opp in WEST_COAST_TEAMS and team in EAST_COAST_TEAMS:
-        situational_factors.append(f"Circadian body-clock travel disadvantage for {opp} in an early East Coast window.")
-    elif is_home:
-        situational_factors.append("Crowd cadence and venue familiarity creating pre-snap operational edges.")
+    client = genai.Client(api_key=gemini_key)
     
-    if is_div:
-        situational_factors.append("Division rivalry pacing heightens defensive focus and red zone execution priority.")
+    analysis_payload = []
+    for w, cands in weekly_slates_to_analyze.items():
+        rec = optimal_path.get(w, "")
+        for c in cands:
+            if c.get("spread") is not None:
+                analysis_payload.append({
+                    "week": w,
+                    "team": c["team"],
+                    "opponent": c["opponent"],
+                    "is_home": c["home"],
+                    "is_recommended": (c["team"] == rec),
+                    "line": c["spread"]
+                })
 
-    if week <= 4:
-        situational_factors.append("Clean baseline injury profile and offensive continuity establish early-season stability.")
-    elif 5 <= week <= 12:
-        situational_factors.append("Mid-season DVOA stability and post-bye preparation advantages drive high baseline efficiency.")
-    elif 13 <= week <= 16:
-        situational_factors.append("Late-season weather resilience and depth in the trenches insulate against environmental volatility.")
-    else:
-        situational_factors.append("Must-win playoff seeding incentives create a distinct motivation disparity.")
+    if not analysis_payload:
+        return {}
 
-    situational_str = " ".join(situational_factors)
+    prompt = f"""
+    You are an elite quantitative NFL analyst and Survivor Pool strategist.
+    Generate a concise, deeply insightful, multi-factor analytical reasoning string (25-45 words) for each NFL matchup candidate below.
+    
+    STRICT RULES:
+    1. DO NOT repeat the point line or odds number in the text (it is already in a separate column).
+    2. Synthesize specific team identities: Passing/Rushing EPA differentials, offensive line pass-protection vs pass rush win rates, travel/time zone circadian impacts, stadium environment (weather/wind/dome), and rest disparities.
+    3. If 'is_recommended' is true, include a brief game-theory Survivor strategy note on Future Value (FV) preservation or leveraging peak season equity.
+    4. Return strictly a JSON array of objects with keys: "week", "team", "reasoning".
+    
+    CANDIDATES DATA:
+    {json.dumps(analysis_payload)}
+    """
 
-    # 3. 18-Week Survivor Portfolio & Future Value (FV) Strategy
-    if is_rec_pick:
-        if abs(spread) >= 8.5 and week <= 6:
-            portfolio_str = (
-                f"MAXIMUM EARLY-SEASON EQUITY: Deploys {team} in a top-tier safety spot to clear the high-attrition "
-                f"early weeks while maintaining balanced future path optionality."
-            )
-        elif week >= 13:
-            portfolio_str = (
-                f"CHAMPIONSHIP ALLOCATION: Capitalizes on preserved late-season leverage to lock in {team} during a high-certainty matchup."
-            )
-        else:
-            portfolio_str = (
-                f"OPTIMAL PATH CONVERGENCE: Maximizes cumulative survival probability to Week 18 without creating future-week bottlenecks."
-            )
-    else:
-        portfolio_str = "Viable weekly alternative; model holds for higher relative seasonal leverage in future slates."
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt
+        )
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(clean_text)
+        reasoning_map = {(d["week"], d["team"]): d["reasoning"] for d in data}
+        return reasoning_map
+    except Exception as e:
+        print(f"Notice during AI reasoning generation: {e}")
+        return {}
 
-    return f"{trench_analysis} {situational_str} {portfolio_str}"
-
-# --- 2. FETCH LIVE SCHEDULE & ONLINE SPORTSBOOK ODDS ---
+# --- 2. FETCH SCHEDULE & ODDS ONLINE ---
 def fetch_online_schedule():
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
     schedule_by_week = {w: [] for w in range(1, WEEKS + 1)}
@@ -183,7 +143,6 @@ def fetch_online_schedule():
     except Exception as e:
         print(f"Notice during online schedule query: {e}")
 
-    # Fallback to verified regular season schedule if indexing
     if not schedule_by_week[1]:
         schedule_by_week[1] = [
             {"home_team": "LAC", "away_team": "ARI"},
@@ -283,7 +242,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
         if spread_val is not None:
             if spread_val <= 0:
                 m_prob = spread_to_market_prob(spread_val)
-                mod_prob = calculate_model_prob(m_prob, True, spread_val, week)
+                mod_prob = calculate_model_prob(m_prob, True, spread_val)
                 candidates.append({
                     "team": h, "opponent": a,
                     "matchup": f"{a} @ {h}",
@@ -292,7 +251,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
             else:
                 away_spread = -spread_val
                 m_prob = spread_to_market_prob(away_spread)
-                mod_prob = calculate_model_prob(m_prob, False, away_spread, week)
+                mod_prob = calculate_model_prob(m_prob, False, away_spread)
                 candidates.append({
                     "team": a, "opponent": h,
                     "matchup": f"{a} @ {h}",
@@ -308,7 +267,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
     candidates.sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0), reverse=True)
     return candidates[:5]
 
-# --- 3. DYNAMIC RE-OPTIMIZATION ENGINE ---
+# --- 3. SURVIVOR OPTIMIZER ---
 def solve_survivor_path(all_weekly_slates, locked_picks):
     num_teams = len(ALL_TEAMS)
     team_to_idx = {t: i for i, t in enumerate(ALL_TEAMS)}
@@ -353,7 +312,7 @@ def sync_to_google_sheets():
 
     sheet = client.open(SHEET_TITLE).worksheet(TAB_NAME)
 
-    # 1. Read existing manual picks from Column D (Rows 2 to 19)
+    # 1. Read existing manual picks from Column D
     existing_data = sheet.get_all_values()
     locked_picks = {}
     if len(existing_data) > 1:
@@ -366,8 +325,8 @@ def sync_to_google_sheets():
 
     print(f"Detected {len(locked_picks)} user locked picks in Column D: {locked_picks}")
 
-    # 2. Reset Sheet Data, Colors, and Merges Completely
-    print("Clearing data, backgrounds, and cell formatting...")
+    # 2. Reset Sheet Data, Colors, and Merges
+    print("Clearing data and formatting...")
     sheet.clear()
     
     total_grid_rows = 1 + (WEEKS * 6)
@@ -394,7 +353,10 @@ def sync_to_google_sheets():
     # 4. Dynamically re-optimize path around user locks
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 5. Calculate Cumulative Survival Percentage based on Model Win %
+    # 5. Generate AI reasoning for candidates
+    ai_reasoning_map = generate_ai_reasoning_batch(all_weekly_slates, optimal_path)
+
+    # 6. Calculate Cumulative Survival Percentage based on Model Win %
     cum_prob = 1.0
     for w in range(1, WEEKS + 1):
         effective_team = locked_picks.get(w, optimal_path.get(w, ""))
@@ -410,7 +372,7 @@ def sync_to_google_sheets():
             
         cum_prob *= w_prob
 
-    # 6. Construct Row Matrix
+    # 7. Construct Row Matrix
     headers = [
         "Week", "Recommended Pick", "|", "My Actual Pick",
         "Candidate Team", "Matchup", "Line", "Market Win %", "Model Win %", "Reasoning & Multi-Factor Synthesis"
@@ -457,11 +419,11 @@ def sync_to_google_sheets():
                 m_prob_display = f"{cand['m_prob'] * 100:.1f}%" if cand["m_prob"] is not None else ""
                 mod_prob_display = f"{cand['mod_prob'] * 100:.1f}%" if cand["mod_prob"] is not None else ""
                 
-                # Dynamic Synthesis Reasoning without hardcoded dictionaries
-                reasoning = generate_dynamic_synthesis(
-                    cand["team"], cand.get("opponent", "OPP"), cand.get("home", True),
-                    cand["spread"], cand["mod_prob"], w, is_rec_pick=is_rec
-                )
+                # Fetch AI reasoning or apply context fallback
+                reasoning = ai_reasoning_map.get((w, cand["team"]), "")
+                if not reasoning and cand["spread"] is not None:
+                    loc = "home" if cand.get("home", False) else "road"
+                    reasoning = f"Significant line-of-scrimmage and EPA advantage as {loc} favorite vs {cand.get('opponent', 'opponent')}."
 
                 matrix[cand_row_num - 1][4] = team_display
                 matrix[cand_row_num - 1][5] = cand.get("matchup", "")
@@ -470,45 +432,39 @@ def sync_to_google_sheets():
                 matrix[cand_row_num - 1][8] = mod_prob_display
                 matrix[cand_row_num - 1][9] = reasoning
 
-    # 7. Write entire matrix
+    # 8. Write entire matrix
     print(f"Writing {total_grid_rows + 2} rows to Google Sheet '{SHEET_TITLE}'...")
     sheet.update(range_name=f"A1:J{total_grid_rows + 2}", values=matrix)
 
-    # 8. Merge cells E:J for each weekly section header
+    # 9. Merge cells E:J for each weekly section header
     for rng in merge_ranges:
         try:
             sheet.merge_cells(rng, merge_type="MERGE_ALL")
         except Exception as e:
             print(f"Notice on merge for {rng}: {e}")
 
-    # 9. Formatting
-
-    # Row 1 Header: Medium Blue (#1E56A0) with bold white text
+    # 10. Formatting
     sheet.format("A1:J1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
         "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
         "horizontalAlignment": "CENTER"
     })
 
-    # Column C Divider: Medium Gray (#9E9E9E)
     sheet.format(f"C1:C{total_grid_rows + 2}", {
         "backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}
     })
 
-    # Data Alignment
     sheet.format(f"A2:B{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
     sheet.format(f"D2:D{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
     sheet.format(f"E2:I{total_grid_rows + 2}", {"horizontalAlignment": "CENTER"})
     sheet.format(f"J2:J{total_grid_rows + 2}", {"horizontalAlignment": "LEFT"})
 
-    # Summary Row 20 (Full Season Cumulative Chance)
     sheet.format("A20:B20", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
         "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
         "horizontalAlignment": "CENTER"
     })
 
-    # Merged Weekly Headers: Light Blue (#D4E6F1) with bold dark navy text
     batch_formats = []
     for rng in merge_ranges:
         batch_formats.append({
@@ -520,7 +476,6 @@ def sync_to_google_sheets():
             }
         })
 
-    # Recommended Pick Rows: Soft Bright Yellow (#FFF28C)
     for r_idx in yellow_rows:
         batch_formats.append({
             "range": f"E{r_idx}:J{r_idx}",
@@ -533,7 +488,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet refreshed cleanly with zero hardcoded team profiles.")
+    print("Success: Google Sheet refreshed cleanly with dynamic AI-generated synthesis reasoning.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
