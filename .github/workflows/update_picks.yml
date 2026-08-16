@@ -2,13 +2,10 @@ name: NFL Survivor Bot Sheet Sync
 
 on:
   schedule:
-    # Runs Tuesday morning (12:00 UTC = 8:00 AM EDT)
     - cron: '0 12 * * 2'
-    # Runs Friday evening (22:00 UTC = 6:00 PM EDT)
     - cron: '0 22 * * 5'
-    # Runs Saturday night (01:00 UTC Sunday = 9:00 PM EDT Sat)
     - cron: '0 1 * * 0'
-  workflow_dispatch: # Enables manual one-click trigger from GitHub and Google Sheets API
+  workflow_dispatch:
 
 jobs:
   run-bot:
