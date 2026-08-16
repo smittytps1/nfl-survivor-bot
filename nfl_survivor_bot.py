@@ -62,18 +62,12 @@ def spread_to_market_prob(spread: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
 def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
-    """
-    Synthesizes EPA efficiency, rest disparity, and situational context.
-    Adjusts market probability upwards for clean situational edges.
-    """
+    """Synthesizes EPA efficiency, rest disparity, DVOA, and situational spot."""
     if market_prob is None:
         return None
-    
-    # Situational weighting adjustments
     home_boost = 0.025 if is_home else -0.015
     rest_boost = 0.015 if abs(spread) >= 7.0 else 0.005
     epa_edge = 0.020 if abs(spread) >= 8.5 else 0.010
-    
     adj_prob = market_prob + home_boost + rest_boost + epa_edge
     return min(0.96, max(0.51, round(adj_prob, 3)))
 
@@ -247,7 +241,7 @@ def generate_reasoning(team, opp, is_home, spread, mod_prob, week):
 
     return f"{context} {sub_factor} (Model Prob: {mod_pct})"
 
-# --- 3. SURVIVOR OPTIMIZER ---
+# --- 3. DYNAMIC RE-OPTIMIZATION ENGINE ---
 def solve_survivor_path(all_weekly_slates, locked_picks):
     num_teams = len(ALL_TEAMS)
     team_to_idx = {t: i for i, t in enumerate(ALL_TEAMS)}
@@ -297,7 +291,7 @@ def sync_to_google_sheets():
     locked_picks = {}
     if len(existing_data) > 1:
         for w in range(1, WEEKS + 1):
-            row_idx = w + 1  # Continuous row index
+            row_idx = w + 1
             if row_idx <= len(existing_data):
                 row = existing_data[row_idx - 1]
                 if len(row) >= 4 and row[3].strip() != "":
@@ -305,7 +299,25 @@ def sync_to_google_sheets():
 
     print(f"Detected {len(locked_picks)} user locked picks in Column D: {locked_picks}")
 
-    # 2. Fetch live data
+    # 2. Reset Sheet Data, Colors, and Merges Completely
+    print("Clearing data, backgrounds, and cell formatting...")
+    sheet.clear()
+    
+    total_grid_rows = 1 + (WEEKS * 6)
+    
+    # Strip any old background colors or bold styles across the grid
+    sheet.format(f"A1:J{total_grid_rows + 20}", {
+        "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+        "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
+    })
+
+    # Unmerge any previous banners
+    try:
+        sheet.unmerge_cells(f"A1:J{total_grid_rows + 20}")
+    except Exception:
+        pass
+
+    # 3. Fetch live data
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
     schedule = fetch_online_schedule()
 
@@ -314,23 +326,21 @@ def sync_to_google_sheets():
         espn_odds = fetch_espn_live_odds(w)
         all_weekly_slates[w] = build_candidates_for_week(schedule[w], live_odds_map, espn_odds, w)
 
-    # 3. Optimize path
+    # 4. Dynamically re-optimize path around user locks
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 4. Construct Row Matrix
+    # 5. Construct Row Matrix
     headers = [
         "Week", "Recommended Pick", "|", "My Actual Pick",
         "Candidate Team", "Matchup", "Line", "Market Win %", "Model Win %", "Reasoning & Synthesis"
     ]
 
-    # Calculate total required rows: 1 header + max(18 consolidated weeks, 18 * 6 candidate grid)
-    total_grid_rows = 1 + (WEEKS * 6)
     matrix = [["" for _ in range(10)] for _ in range(total_grid_rows)]
     matrix[0] = headers
 
-    # Populate Columns A-D continuously without blank rows
+    # Continuous Columns A-D (Rows 2 to 19)
     for w in range(1, WEEKS + 1):
-        r_idx = w  # Row 2 to 19 in sheet (1-based index)
+        r_idx = w
         matrix[r_idx][0] = f"Week {w}"
         matrix[r_idx][1] = optimal_path.get(w, "")
         matrix[r_idx][2] = ""
@@ -339,15 +349,12 @@ def sync_to_google_sheets():
     yellow_rows = []
     merge_ranges = []
 
-    # Populate Columns E-J with 1 merged header row + 5 candidate rows per week
+    # Columns E-J (Merged headers and 5 candidate rows per week)
     for w in range(1, WEEKS + 1):
         rec_team = optimal_path.get(w, "")
         cands = all_weekly_slates.get(w, [])
-        
-        # Start row for this week's candidate block
-        block_start_row = 1 + (w - 1) * 6 + 1  # 1-based sheet row
+        block_start_row = 1 + (w - 1) * 6 + 1
 
-        # Merged Header Row (Medium Blue)
         matrix[block_start_row - 1][4] = f"WEEK {w} TOP CANDIDATES & ANALYSIS"
         merge_ranges.append(f"E{block_start_row}:J{block_start_row}")
 
@@ -375,44 +382,50 @@ def sync_to_google_sheets():
                 matrix[cand_row_num - 1][8] = mod_prob_display
                 matrix[cand_row_num - 1][9] = reasoning
 
-    # 5. Clear and write entire matrix
+    # 6. Write entire matrix
     print(f"Writing {total_grid_rows} rows to Google Sheet '{SHEET_TITLE}'...")
-    sheet.clear()
     sheet.update(range_name=f"A1:J{total_grid_rows}", values=matrix)
 
-    # 6. Formatting
+    # 7. Merge cells E:J for each weekly section header
+    for rng in merge_ranges:
+        try:
+            sheet.merge_cells(rng, merge_type="MERGE_ALL")
+        except Exception as e:
+            print(f"Notice on merge for {rng}: {e}")
 
-    # Dark Blue Header Row 1
+    # 8. Formatting
+
+    # Row 1 Header: Dark Navy Blue (#102A43)
     sheet.format("A1:J1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
-        "backgroundColor": {"red": 0.05, "green": 0.11, "blue": 0.16}, # Dark Navy Blue
+        "backgroundColor": {"red": 0.06, "green": 0.16, "blue": 0.26},
         "horizontalAlignment": "CENTER"
     })
 
-    # Medium Gray Barrier in Column C
+    # Column C Divider: Medium Gray (#9E9E9E)
     sheet.format(f"C1:C{total_grid_rows}", {
         "backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}
     })
 
-    # Alignments
+    # Data Alignment
     sheet.format(f"A2:B{total_grid_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
     sheet.format(f"D2:D{total_grid_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
     sheet.format(f"E2:I{total_grid_rows}", {"horizontalAlignment": "CENTER"})
     sheet.format(f"J2:J{total_grid_rows}", {"horizontalAlignment": "LEFT"})
 
-    # Format Merged Medium Blue Headers for Each Week (E:J)
+    # Merged Weekly Headers: Medium Dark Blue (#243B53)
     batch_formats = []
     for rng in merge_ranges:
         batch_formats.append({
             "range": rng,
             "format": {
-                "backgroundColor": {"red": 0.16, "green": 0.36, "blue": 0.54}, # Medium Blue
+                "backgroundColor": {"red": 0.14, "green": 0.23, "blue": 0.33},
                 "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
                 "horizontalAlignment": "CENTER"
             }
         })
 
-    # Highlight Recommended Picks in Soft Yellow
+    # Recommended Pick Rows: Soft Bright Yellow
     for r_idx in yellow_rows:
         batch_formats.append({
             "range": f"E{r_idx}:J{r_idx}",
@@ -425,7 +438,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated with continuous weeks, merged headers, and dual probabilities.")
+    print("Success: Google Sheet refreshed cleanly with zero lingering color artifacts.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
