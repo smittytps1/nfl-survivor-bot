@@ -305,13 +305,11 @@ def sync_to_google_sheets():
     
     total_grid_rows = 1 + (WEEKS * 6)
     
-    # Strip any old background colors across the grid
     sheet.format(f"A1:J{total_grid_rows + 20}", {
         "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
         "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
     })
 
-    # Unmerge any previous weekly banners
     try:
         sheet.unmerge_cells(f"A1:J{total_grid_rows + 20}")
     except Exception:
@@ -329,22 +327,48 @@ def sync_to_google_sheets():
     # 4. Dynamically re-optimize path around user locks
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 5. Construct Row Matrix
+    # 5. Calculate Cumulative Survival Percentages based on Model Win %
+    cum_prob = 1.0
+    weekly_cum_probs = {}
+    for w in range(1, WEEKS + 1):
+        effective_team = locked_picks.get(w, optimal_path.get(w, ""))
+        week_cands = all_weekly_slates.get(w, [])
+        matched = next((c for c in week_cands if c["team"] == effective_team and c["mod_prob"] is not None), None)
+        
+        # Default to highest candidate prob or conservative baseline if unpriced
+        if matched and matched["mod_prob"] is not None:
+            w_prob = matched["mod_prob"]
+        elif week_cands and week_cands[0]["mod_prob"] is not None:
+            w_prob = week_cands[0]["mod_prob"]
+        else:
+            w_prob = 0.74  # Baseline model average for primary survivor tier
+            
+        cum_prob *= w_prob
+        weekly_cum_probs[w] = cum_prob
+
+    # 6. Construct Row Matrix
     headers = [
         "Week", "Recommended Pick", "|", "My Actual Pick",
         "Candidate Team", "Matchup", "Line", "Market Win %", "Model Win %", "Reasoning & Synthesis"
     ]
 
-    matrix = [["" for _ in range(10)] for _ in range(total_grid_rows)]
+    matrix = [["" for _ in range(10)] for _ in range(total_grid_rows + 2)]
     matrix[0] = headers
 
-    # Continuous Columns A-D (Rows 2 to 19)
+    # Continuous Columns A-D (Rows 2 to 19) with cumulative percent attached
     for w in range(1, WEEKS + 1):
         r_idx = w
+        rec_team = optimal_path.get(w, "")
+        cum_str = f"{weekly_cum_probs[w] * 100:.1f}%"
+        
         matrix[r_idx][0] = f"Week {w}"
-        matrix[r_idx][1] = optimal_path.get(w, "")
+        matrix[r_idx][1] = f"{rec_team} ({cum_str})" if rec_team else ""
         matrix[r_idx][2] = ""
         matrix[r_idx][3] = locked_picks.get(w, "")
+
+    # Add Cumulative Season Summary in Rows 20 & 21
+    matrix[20][0] = "🏆 18-Week Full Season Survival Chance"
+    matrix[20][1] = f"{weekly_cum_probs[18] * 100:.2f}%"
 
     yellow_rows = []
     merge_ranges = []
@@ -382,18 +406,18 @@ def sync_to_google_sheets():
                 matrix[cand_row_num - 1][8] = mod_prob_display
                 matrix[cand_row_num - 1][9] = reasoning
 
-    # 6. Write entire matrix
-    print(f"Writing {total_grid_rows} rows to Google Sheet '{SHEET_TITLE}'...")
-    sheet.update(range_name=f"A1:J{total_grid_rows}", values=matrix)
+    # 7. Write entire matrix
+    print(f"Writing {total_grid_rows + 2} rows to Google Sheet '{SHEET_TITLE}'...")
+    sheet.update(range_name=f"A1:J{total_grid_rows + 2}", values=matrix)
 
-    # 7. Merge cells E:J for each weekly section header
+    # 8. Merge cells E:J for each weekly section header
     for rng in merge_ranges:
         try:
             sheet.merge_cells(rng, merge_type="MERGE_ALL")
         except Exception as e:
             print(f"Notice on merge for {rng}: {e}")
 
-    # 8. Formatting
+    # 9. Formatting
 
     # Row 1 Header: Medium Blue (#1E56A0) with bold white text
     sheet.format("A1:J1", {
@@ -403,15 +427,22 @@ def sync_to_google_sheets():
     })
 
     # Column C Divider: Medium Gray (#9E9E9E)
-    sheet.format(f"C1:C{total_grid_rows}", {
+    sheet.format(f"C1:C{total_grid_rows + 2}", {
         "backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}
     })
 
     # Data Alignment
-    sheet.format(f"A2:B{total_grid_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-    sheet.format(f"D2:D{total_grid_rows}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-    sheet.format(f"E2:I{total_grid_rows}", {"horizontalAlignment": "CENTER"})
-    sheet.format(f"J2:J{total_grid_rows}", {"horizontalAlignment": "LEFT"})
+    sheet.format(f"A2:B{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
+    sheet.format(f"D2:D{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
+    sheet.format(f"E2:I{total_grid_rows + 2}", {"horizontalAlignment": "CENTER"})
+    sheet.format(f"J2:J{total_grid_rows + 2}", {"horizontalAlignment": "LEFT"})
+
+    # Summary Row 21 (18-Week Cumulative Chance)
+    sheet.format("A21:B21", {
+        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+        "horizontalAlignment": "CENTER"
+    })
 
     # Merged Weekly Headers: Light Blue (#D4E6F1) with bold dark navy text
     batch_formats = []
@@ -438,7 +469,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated with Medium Blue top row and Light Blue weekly header rows.")
+    print("Success: Google Sheet refreshed with cumulative survival percentages in Columns A & B.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
