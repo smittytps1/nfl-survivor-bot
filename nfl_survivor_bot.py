@@ -9,7 +9,6 @@ import numpy as np
 import gspread
 from google.oauth2.service_account import Credentials
 from google import genai
-from google.genai import types
 from scipy.optimize import linear_sum_assignment
 
 # --- SPREADSHEET CONFIGURATION ---
@@ -71,76 +70,67 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float) -> fl
     adj_prob = market_prob + home_boost + rest_boost + epa_edge
     return min(0.96, max(0.51, round(adj_prob, 3)))
 
-# --- 1. DEEP SEARCH-GROUNDED AI REASONING ENGINE ---
+# --- 1. GEMINI REASONING (STRICTLY NO FALLBACK TEXT) ---
 def generate_deep_ai_reasoning(weekly_slates, optimal_path):
-    """
-    Executes deep multi-factor quantitative NFL reasoning using Gemini
-    with Google Search Grounding to evaluate unique match facts.
-    """
     gemini_key = os.environ.get("GEMINI_API_KEY")
+    reasoning_map = {}
+
+    # If key is missing, return empty dict immediately so Column J remains completely blank
     if not gemini_key:
-        print("Warning: GEMINI_API_KEY missing. Reasonings will be omitted.")
-        return {}
+        print("Notice: No GEMINI_API_KEY detected. Reasoning cells will be left blank.")
+        return reasoning_map
 
     client = genai.Client(api_key=gemini_key)
-    
-    candidates_list = []
-    for w in range(1, WEEKS + 1):
-        rec_team = optimal_path.get(w, "")
+
+    active_weeks = [w for w, sl in weekly_slates.items() if any(c.get("spread") is not None for c in sl)]
+    print(f"Generating AI reasoning for active weeks: {active_weeks}...")
+
+    for w in active_weeks:
+        rec = optimal_path.get(w, "")
+        week_candidates = []
         for c in weekly_slates.get(w, []):
             if c.get("spread") is not None:
-                candidates_list.append({
-                    "week": w,
+                week_candidates.append({
                     "team": c["team"],
-                    "opponent": c["opponent"],
-                    "matchup": c["matchup"],
-                    "spread": c["spread"],
-                    "is_recommended": (c["team"] == rec_team)
+                    "opponent": c.get("opponent", ""),
+                    "is_home": c.get("home", True),
+                    "is_recommended": (c["team"] == rec)
                 })
 
-    if not candidates_list:
-        return {}
+        if not week_candidates:
+            continue
 
-    prompt = f"""
-    You are an elite NFL quantitative analyst and 18-week Survivor Pool grandmaster.
-    Generate a 100% ORIGINAL, highly specific, in-depth analytical synthesis (30-50 words) for EVERY candidate below.
+        prompt = f"""
+        You are an elite NFL quantitative analyst and Survivor Pool strategist.
+        Generate a 100% ORIGINAL, highly specific, in-depth analytical synthesis (30-45 words) for each NFL matchup in Week {w}.
 
-    ANALYTICAL REQUIREMENTS (NO BOILERPLATE, NO GENERIC PHRASES):
-    1. DO NOT mention the spread or point line number anywhere in your text.
-    2. Deep Matchup Metrics: Cite specific schematic & personnel clashes (e.g., offensive line Pass Block Win Rate vs pass-rush pressure rate, net passing/rushing EPA differentials, man/zone coverage vulnerabilities, red zone touchdown efficiency).
-    3. Environmental & Situational Spot: Factor in crowd acoustics/dome speed, cold/wind conditions, rest advantage (mini-bye, travel recovery), and time-zone circadian fatigue (West Coast teams traveling to 1:00 PM ET games).
-    4. 18-Week Survivor Game Theory: If 'is_recommended' is true, explicitly justify why taking this team in this exact week maximizes cumulative 18-week survival equity while preserving elite Future Value (FV) assets for high-attrition late-season bottlenecks.
-    
-    INPUT CANDIDATES:
-    {json.dumps(candidates_list)}
+        CRITICAL RULES:
+        1. DO NOT mention the spread or betting line number anywhere.
+        2. Analyze specific trench and schematic dynamics: Pass Block Win Rate vs pass rush pressure, net EPA per play, turnover regression, and red zone touchdown conversion.
+        3. Factor in venue dynamics: Dome speed vs outdoor weather, travel/time zone fatigue, and crowd noise.
+        4. If 'is_recommended' is true, detail why taking this team in Week {w} maximizes 18-week Survivor path equity while protecting Future Value (FV).
 
-    Return strictly a JSON array of objects formatted as:
-    [
-      {{"week": 1, "team": "LAC", "reasoning": "Deep specific synthesized analysis..."}}
-    ]
-    """
+        CANDIDATES:
+        {json.dumps(week_candidates)}
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.2
+        Return ONLY a JSON array of objects with keys "team" and "reasoning".
+        """
+
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
             )
-        )
-        text = response.text.strip()
-        json_match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
-        if json_match:
-            clean_json = json_match.group(0)
-        else:
-            clean_json = text.replace("```json", "").replace("```", "").strip()
+            text = response.text.strip()
+            json_match = re.search(r'\[\s*\{.*\}\s*\]', text, re.DOTALL)
+            clean_json = json_match.group(0) if json_match else text.replace("```json", "").replace("```", "").strip()
+            data = json.loads(clean_json)
+            for item in data:
+                reasoning_map[(w, item["team"])] = item["reasoning"]
+        except Exception as e:
+            print(f"AI generation notice for Week {w}: {e}. Leaving reasoning blank.")
 
-        data = json.loads(clean_json)
-        return {(d["week"], d["team"]): d["reasoning"] for d in data}
-    except Exception as e:
-        print(f"Error during deep AI reasoning generation: {e}")
-        return {}
+    return reasoning_map
 
 # --- 2. FETCH OFFICIAL SCHEDULE & LIVE SPORTSBOOK ODDS ---
 def fetch_online_schedule():
@@ -162,7 +152,6 @@ def fetch_online_schedule():
     except Exception as e:
         print(f"Notice during schedule fetch: {e}")
 
-    # Official 2026 NFL Regular Season Schedule matrix
     if not schedule_by_week[1]:
         schedule_by_week[1] = [
             {"home_team": "LAC", "away_team": "ARI"},
@@ -373,10 +362,10 @@ def sync_to_google_sheets():
     # 4. Dynamically re-optimize path around user locks
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 5. Generate Search-Grounded Deep AI Synthesis Reasoning
+    # 5. Generate AI Reasoning (Purely Gemini, no fallback strings)
     ai_reasonings = generate_deep_ai_reasoning(all_weekly_slates, optimal_path)
 
-    # 6. Calculate Cumulative Survival Percentage based on Model Win %
+    # 6. Calculate Cumulative Survival Percentage
     cum_prob = 1.0
     for w in range(1, WEEKS + 1):
         effective_team = locked_picks.get(w, optimal_path.get(w, ""))
@@ -439,7 +428,7 @@ def sync_to_google_sheets():
                 m_prob_display = f"{cand['m_prob'] * 100:.1f}%" if cand["m_prob"] is not None else ""
                 mod_prob_display = f"{cand['mod_prob'] * 100:.1f}%" if cand["mod_prob"] is not None else ""
                 
-                # Fetch Deep AI synthesized reasoning
+                # Fetch AI reasoning; default strictly to empty string if not generated
                 reasoning = ai_reasonings.get((w, cand["team"]), "")
 
                 matrix[cand_row_num - 1][4] = team_display
@@ -505,7 +494,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet refreshed cleanly with deep, non-repetitive search-grounded reasoning.")
+    print("Success: Google Sheet updated cleanly with zero fallback text.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
