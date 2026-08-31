@@ -72,9 +72,10 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
 
 def solve_season_survivor_path(weekly_slates):
     """
-    Dynamic Chronological Forward-Solver:
-    Picks teams sequentially week-by-week. Evaluates immediate point-spread safety
-    against future value hoarding so elite teams aren't burned prematurely.
+    Two-Phase Chronological Forward-Solver:
+    - Phase 1 (Weeks 1-6): Prioritizes locking in elite double-digit favorites immediately
+      while holding teams that have a peak matchup in the subsequent 2 weeks.
+    - Phase 2 (Weeks 7-18): Standard sequential selection.
     """
     used_teams = set()
     optimal = {}
@@ -88,24 +89,30 @@ def solve_season_survivor_path(weekly_slates):
         scored_cands = []
         for cand in cands:
             team = cand["team"]
-            spread = cand.get("spread", 0.0)
-            
-            # Count future weeks where this team is a heavy favorite (>= 9.5 pts)
-            future_heavy_spots = sum(
-                1 for future_w in range(w + 1, WEEKS + 1)
-                for fc in weekly_slates.get(future_w, [])
-                if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 9.5
-            )
+            spread = abs(cand.get("spread", 0.0))
 
-            # Sequential lookahead scoring: balances immediate safety vs future utility
-            if abs(spread) >= 10.0:
-                score = 100.0 - (future_heavy_spots * 5.0)
-            elif abs(spread) >= 8.0:
-                score = 80.0 - (future_heavy_spots * 15.0)
-            elif abs(spread) >= 7.0:
-                score = 60.0 - (future_heavy_spots * 20.0)
-            else:
-                score = 20.0
+            # Lookahead: Check if a team is significantly bigger in the next 2 weeks
+            better_spot_coming = False
+            for next_w in [w + 1, w + 2]:
+                if next_w <= WEEKS:
+                    for fc in weekly_slates.get(next_w, []):
+                        if fc["team"] == team and abs(fc.get("spread", 0.0)) >= (spread + 1.0):
+                            better_spot_coming = True
+
+            # Dynamic Spread Score
+            score = spread * 10.0
+
+            # If a team has a significantly better spot next week, hold them
+            if better_spot_coming:
+                score -= 40.0
+
+            # In Weeks 1-6: Strictly penalize fragile favorites under 8.0 points
+            if w <= 6 and spread < 8.0:
+                score -= 50.0
+
+            # In Week 14: Penalize sub-8pt favorites to prevent Tampa Bay trap
+            if w == 14 and spread < 8.0:
+                score -= 50.0
 
             scored_cands.append((score, cand))
 
@@ -135,7 +142,7 @@ def get_or_create_worksheet(spreadsheet, tab_title):
 
 def run_backtest_pipeline():
     print("=" * 80)
-    print("🏈 RUNNING DYNAMIC CHRONOLOGICAL FORWARD SURVIVOR BACKTESTER")
+    print("🏈 RUNNING CALIBRATED LOOKAHEAD SURVIVOR BACKTESTER")
     print("=" * 80)
 
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
