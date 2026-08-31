@@ -1,0 +1,26 @@
+name: Run Survivor Diagnostics & Tuning
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-diagnostics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy scipy gspread google-auth
+
+      - name: Execute Diagnostics
+        env:
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+        run: python survivor_diagnostic.py
