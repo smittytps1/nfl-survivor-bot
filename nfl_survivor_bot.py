@@ -5,7 +5,6 @@ import os
 import re
 from google.oauth2.service_account import Credentials
 import gspread
-import numpy as np
 import pandas as pd
 import requests
 
@@ -70,8 +69,9 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
 
 def solve_survivor_path(all_weekly_slates, locked_picks):
     """
-    Two-Phase Chronological Forward-Solver for Active Season:
-    Honors user locked picks while maximizing weekly spread safety.
+    Deep-Season Forward-Solver:
+    Scans the entire rest of the season to hoard elite teams for later weeks
+    and aggressively penalizes road games to minimize variance.
     """
     used_teams = set()
     optimal = {}
@@ -96,25 +96,30 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
             team = cand["team"]
             spread = abs(cand.get("spread", 0.0))
 
-            better_spot_coming = False
-            for next_w in [w + 1, w + 2]:
-                if next_w <= WEEKS:
-                    for fc in all_weekly_slates.get(next_w, []):
-                        if fc["team"] == team and abs(fc.get("spread", 0.0)) >= (spread + 1.0):
-                            better_spot_coming = True
+            # 1. Global Lookahead: Find the best future spread for this team
+            max_future_spread = 0.0
+            for next_w in range(w + 1, WEEKS + 1):
+                for fc in all_weekly_slates.get(next_w, []):
+                    if fc["team"] == team:
+                        f_spread = abs(fc.get("spread", 0.0))
+                        if f_spread > max_future_spread:
+                            max_future_spread = f_spread
 
+            # Base score is driven by the current week's spread
             score = spread * 10.0
-            if better_spot_coming:
-                score -= 40.0
 
-            if w <= 6 and spread < 8.0:
-                score -= 50.0
+            # 2. Save Elite Spots: If they have a massive future matchup (>8.5 spread), heavily penalize using them now
+            if max_future_spread > max(spread + 1.0, 8.5):
+                # The larger the difference between their future value and current value, the harsher the penalty
+                score -= (max_future_spread - spread) * 15.0
 
-            if w == 14 and spread < 8.0:
-                score -= 50.0
+            # 3. Variance Control: Heavily penalize picking road teams
+            if not cand.get("home", False):
+                score -= 20.0
 
             scored_cands.append((score, cand))
 
+        # Sort by highest computed score
         scored_cands.sort(key=lambda x: x[0], reverse=True)
         best_pick = scored_cands[0][1]["team"]
         optimal[w] = best_pick
@@ -130,7 +135,14 @@ def fetch_online_schedule():
         res = requests.get(url, timeout=12)
         if res.status_code == 200:
             df = pd.read_csv(io.StringIO(res.text), low_memory=False)
+            
+            # Filter for correct season and regular season only
             df = df[(df['season'] == SEASON_YEAR) & (df['game_type'] == 'REG')]
+            
+            # NEW CONSTRAINT: Strictly filter out Thursday, Friday, and Saturday games
+            if 'weekday' in df.columns:
+                df = df[df['weekday'].isin(['Sunday', 'Monday'])]
+                
             for _, row in df.iterrows():
                 w = int(row['week'])
                 if 1 <= w <= WEEKS:
@@ -141,6 +153,7 @@ def fetch_online_schedule():
     except Exception as e:
         print(f"Notice during schedule fetch: {e}")
 
+    # Fallback structure if the API call fails or lacks week 1 data
     if not schedule_by_week[1]:
         schedule_by_week[1] = [
             {"home_team": "LAC", "away_team": "ARI"}, {"home_team": "DET", "away_team": "NO"},
@@ -152,12 +165,6 @@ def fetch_online_schedule():
             {"home_team": "LV", "away_team": "MIA"}, {"home_team": "MIN", "away_team": "GB"},
             {"home_team": "NYG", "away_team": "DAL"}, {"home_team": "CAR", "away_team": "CHI"}
         ]
-        for w in range(2, WEEKS + 1):
-            schedule_by_week[w] = [
-                {"home_team": "BAL", "away_team": "LV"}, {"home_team": "DAL", "away_team": "NO"},
-                {"home_team": "SF", "away_team": "MIN"}, {"home_team": "BUF", "away_team": "MIA"},
-                {"home_team": "KC", "away_team": "CIN"}
-            ]
 
     return schedule_by_week
 
@@ -372,24 +379,41 @@ def sync_to_google_sheets():
         except Exception:
             pass
 
-    sheet.format("A1:I1", {
-        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
-        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
-        "horizontalAlignment": "CENTER"
-    })
+    batch_formats = [
+        {
+            "range": "A1:I1",
+            "format": {
+                "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+                "horizontalAlignment": "CENTER"
+            }
+        },
+        {
+            "range": f"C1:C{total_grid_rows + 2}",
+            "format": {"backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}}
+        },
+        {
+            "range": f"A2:B{total_grid_rows + 2}",
+            "format": {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}}
+        },
+        {
+            "range": f"D2:D{total_grid_rows + 2}",
+            "format": {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}}
+        },
+        {
+            "range": f"E2:I{total_grid_rows + 2}",
+            "format": {"horizontalAlignment": "CENTER"}
+        },
+        {
+            "range": "A20:B20",
+            "format": {
+                "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+                "horizontalAlignment": "CENTER"
+            }
+        }
+    ]
 
-    sheet.format(f"C1:C{total_grid_rows + 2}", {"backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}})
-    sheet.format(f"A2:B{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-    sheet.format(f"D2:D{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-    sheet.format(f"E2:I{total_grid_rows + 2}", {"horizontalAlignment": "CENTER"})
-
-    sheet.format("A20:B20", {
-        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
-        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
-        "horizontalAlignment": "CENTER"
-    })
-
-    batch_formats = []
     for rng in merge_ranges:
         batch_formats.append({
             "range": rng,
@@ -412,7 +436,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with dynamic forward-lookahead survivor model.")
+    print("Success: Google Sheet updated cleanly with dynamic deep-season survivor model.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
