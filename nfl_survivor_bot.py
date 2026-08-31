@@ -8,7 +8,6 @@ import gspread
 import numpy as np
 import pandas as pd
 import requests
-from scipy.optimize import linear_sum_assignment
 
 # --- SPREADSHEET CONFIGURATION ---
 SHEET_TITLE = "NFL Picks"
@@ -61,21 +60,67 @@ def spread_to_market_prob(spread: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
 def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
-    """
-    Calibrated Model Win Probability:
-    - Incorporates early-season volatility discount (Weeks 1-4).
-    - Enforces safety floors against small road spreads.
-    - Prevents double-counting already baked into market lines.
-    """
     if market_prob is None:
         return None
-        
     early_discount = -0.035 if week <= 4 else 0.0
     home_edge = 0.010 if is_home else -0.005
-    heavy_fav_boost = 0.020 if abs(spread) >= 9.5 else ( -0.030 if abs(spread) < 6.5 else 0.0 )
-    
+    heavy_fav_boost = 0.025 if abs(spread) >= 9.5 else (-0.035 if abs(spread) < 7.0 else 0.0)
     adj_prob = market_prob + early_discount + home_edge + heavy_fav_boost
     return min(0.96, max(0.50, round(adj_prob, 3)))
+
+def solve_survivor_path(all_weekly_slates, locked_picks):
+    """
+    Two-Phase Chronological Forward-Solver for Active Season:
+    Honors user locked picks while maximizing weekly spread safety.
+    """
+    used_teams = set()
+    optimal = {}
+
+    # Lock in manual picks first
+    for w in range(1, WEEKS + 1):
+        if w in locked_picks and locked_picks[w]:
+            used_teams.add(locked_picks[w])
+
+    for w in range(1, WEEKS + 1):
+        if w in locked_picks and locked_picks[w]:
+            optimal[w] = locked_picks[w]
+            continue
+
+        cands = [c for c in all_weekly_slates.get(w, []) if c["team"] not in used_teams and c["mod_prob"] is not None]
+        if not cands:
+            optimal[w] = ""
+            continue
+
+        scored_cands = []
+        for cand in cands:
+            team = cand["team"]
+            spread = abs(cand.get("spread", 0.0))
+
+            better_spot_coming = False
+            for next_w in [w + 1, w + 2]:
+                if next_w <= WEEKS:
+                    for fc in all_weekly_slates.get(next_w, []):
+                        if fc["team"] == team and abs(fc.get("spread", 0.0)) >= (spread + 1.0):
+                            better_spot_coming = True
+
+            score = spread * 10.0
+            if better_spot_coming:
+                score -= 40.0
+
+            if w <= 6 and spread < 8.0:
+                score -= 50.0
+
+            if w == 14 and spread < 8.0:
+                score -= 50.0
+
+            scored_cands.append((score, cand))
+
+        scored_cands.sort(key=lambda x: x[0], reverse=True)
+        best_pick = scored_cands[0][1]["team"]
+        optimal[w] = best_pick
+        used_teams.add(best_pick)
+
+    return optimal
 
 def fetch_online_schedule():
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
@@ -98,29 +143,19 @@ def fetch_online_schedule():
 
     if not schedule_by_week[1]:
         schedule_by_week[1] = [
-            {"home_team": "LAC", "away_team": "ARI"},
-            {"home_team": "DET", "away_team": "NO"},
-            {"home_team": "CIN", "away_team": "TB"},
-            {"home_team": "KC", "away_team": "DEN"},
-            {"home_team": "PHI", "away_team": "WAS"},
-            {"home_team": "SEA", "away_team": "NE"},
-            {"home_team": "LAR", "away_team": "SF"},
-            {"home_team": "HOU", "away_team": "BUF"},
-            {"home_team": "PIT", "away_team": "ATL"},
-            {"home_team": "JAX", "away_team": "CLE"},
-            {"home_team": "TEN", "away_team": "NYJ"},
-            {"home_team": "IND", "away_team": "BAL"},
-            {"home_team": "LV", "away_team": "MIA"},
-            {"home_team": "MIN", "away_team": "GB"},
-            {"home_team": "NYG", "away_team": "DAL"},
-            {"home_team": "CAR", "away_team": "CHI"}
+            {"home_team": "LAC", "away_team": "ARI"}, {"home_team": "DET", "away_team": "NO"},
+            {"home_team": "CIN", "away_team": "TB"}, {"home_team": "KC", "away_team": "DEN"},
+            {"home_team": "PHI", "away_team": "WAS"}, {"home_team": "SEA", "away_team": "NE"},
+            {"home_team": "LAR", "away_team": "SF"}, {"home_team": "HOU", "away_team": "BUF"},
+            {"home_team": "PIT", "away_team": "ATL"}, {"home_team": "JAX", "away_team": "CLE"},
+            {"home_team": "TEN", "away_team": "NYJ"}, {"home_team": "IND", "away_team": "BAL"},
+            {"home_team": "LV", "away_team": "MIA"}, {"home_team": "MIN", "away_team": "GB"},
+            {"home_team": "NYG", "away_team": "DAL"}, {"home_team": "CAR", "away_team": "CHI"}
         ]
         for w in range(2, WEEKS + 1):
             schedule_by_week[w] = [
-                {"home_team": "BAL", "away_team": "LV"},
-                {"home_team": "DAL", "away_team": "NO"},
-                {"home_team": "SF", "away_team": "MIN"},
-                {"home_team": "BUF", "away_team": "MIA"},
+                {"home_team": "BAL", "away_team": "LV"}, {"home_team": "DAL", "away_team": "NO"},
+                {"home_team": "SF", "away_team": "MIN"}, {"home_team": "BUF", "away_team": "MIA"},
                 {"home_team": "KC", "away_team": "CIN"}
             ]
 
@@ -197,8 +232,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
                 m_prob = spread_to_market_prob(spread_val)
                 mod_prob = calculate_model_prob(m_prob, True, spread_val, week)
                 candidates.append({
-                    "team": h, "opponent": a,
-                    "matchup": f"{a} @ {h}",
+                    "team": h, "opponent": a, "matchup": f"{a} @ {h}",
                     "spread": spread_val, "m_prob": m_prob, "mod_prob": mod_prob, "home": True
                 })
             else:
@@ -206,51 +240,17 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
                 m_prob = spread_to_market_prob(away_spread)
                 mod_prob = calculate_model_prob(m_prob, False, away_spread, week)
                 candidates.append({
-                    "team": a, "opponent": h,
-                    "matchup": f"{a} @ {h}",
+                    "team": a, "opponent": h, "matchup": f"{a} @ {h}",
                     "spread": away_spread, "m_prob": m_prob, "mod_prob": mod_prob, "home": False
                 })
         else:
             candidates.append({
-                "team": h, "opponent": a,
-                "matchup": f"{a} @ {h}",
+                "team": h, "opponent": a, "matchup": f"{a} @ {h}",
                 "spread": None, "m_prob": None, "mod_prob": None, "home": True
             })
 
     candidates.sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0), reverse=True)
     return candidates[:5]
-
-def solve_survivor_path(all_weekly_slates, locked_picks):
-    num_teams = len(ALL_TEAMS)
-    team_to_idx = {t: i for i, t in enumerate(ALL_TEAMS)}
-    idx_to_team = {i: t for i, t in enumerate(ALL_TEAMS)}
-
-    cost_matrix = np.full((WEEKS, num_teams), fill_value=1e5)
-
-    for w in range(1, WEEKS + 1):
-        row = w - 1
-        locked_team = locked_picks.get(w, "").strip().upper()
-
-        if locked_team and locked_team in team_to_idx:
-            cost_matrix[row, team_to_idx[locked_team]] = -10000.0
-        else:
-            for cand in all_weekly_slates.get(w, []):
-                t_idx = team_to_idx.get(cand["team"])
-                if t_idx is not None and cand["mod_prob"] is not None:
-                    # Enforce hard spread threshold for Weeks 1-10
-                    if w <= 10 and cand["spread"] is not None and abs(cand["spread"]) < 6.5:
-                        cost_matrix[row, t_idx] = -math.log(max(0.40, cand["mod_prob"] - 0.15))
-                    else:
-                        cost_matrix[row, t_idx] = -math.log(cand["mod_prob"])
-
-    row_ind, col_ind = linear_sum_assignment(cost_matrix)
-    optimal = {}
-    for r, c in zip(row_ind, col_ind):
-        if cost_matrix[r, c] < 1e4:
-            optimal[r + 1] = idx_to_team[c]
-        else:
-            optimal[r + 1] = ""
-    return optimal
 
 def sync_to_google_sheets():
     print("Connecting to Google Sheets...")
@@ -260,11 +260,9 @@ def sync_to_google_sheets():
     if not creds_json:
         raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable missing.")
 
-    creds_dict = json.loads(creds_json)
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
     client = gspread.authorize(creds)
-
     sheet = client.open(SHEET_TITLE).worksheet(TAB_NAME)
 
     existing_data = sheet.get_all_values()
@@ -371,8 +369,8 @@ def sync_to_google_sheets():
     for rng in merge_ranges:
         try:
             sheet.merge_cells(rng, merge_type="MERGE_ALL")
-        except Exception as e:
-            print(f"Notice on merge for {rng}: {e}")
+        except Exception:
+            pass
 
     sheet.format("A1:I1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
@@ -414,7 +412,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with calibrated parameters.")
+    print("Success: Google Sheet updated cleanly with dynamic forward-lookahead survivor model.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
