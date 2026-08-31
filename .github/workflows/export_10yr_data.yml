@@ -1,0 +1,32 @@
+name: Scrape & Export 10-Year NFL Dataset
+
+on:
+  workflow_dispatch:  # Allows manual run from the GitHub UI
+
+jobs:
+  build-and-export:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy
+
+      - name: Scrape and Build CSV
+        run: python build_10yr_dataset.py
+
+      - name: Upload 10-Year Dataset as Downloadable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfl-10-year-historical-data-2016-2025
+          path: nfl_10yr_historical_data_2016_2025.csv
+          retention-days: 30
