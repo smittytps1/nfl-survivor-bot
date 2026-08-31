@@ -72,10 +72,9 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
 
 def solve_season_survivor_path(weekly_slates):
     """
-    Two-Phase Chronological Forward-Solver:
-    - Phase 1 (Weeks 1-6): Prioritizes locking in elite double-digit favorites immediately
-      while holding teams that have a peak matchup in the subsequent 2 weeks.
-    - Phase 2 (Weeks 7-18): Standard sequential selection.
+    Sequential Forward Lookahead Solver:
+    - Protects future peak value: if a team has an equal or larger spread in the next 2 weeks, hold them.
+    - Forces taking double-digit favorites early (Weeks 1-6) while penalizing sub-8pt traps.
     """
     used_teams = set()
     optimal = {}
@@ -91,26 +90,22 @@ def solve_season_survivor_path(weekly_slates):
             team = cand["team"]
             spread = abs(cand.get("spread", 0.0))
 
-            # Lookahead: Check if a team is significantly bigger in the next 2 weeks
+            # Lookahead: Hold team if they are bigger or comparable in next 2 weeks
             better_spot_coming = False
             for next_w in [w + 1, w + 2]:
                 if next_w <= WEEKS:
                     for fc in weekly_slates.get(next_w, []):
-                        if fc["team"] == team and abs(fc.get("spread", 0.0)) >= (spread + 1.0):
+                        if fc["team"] == team and abs(fc.get("spread", 0.0)) >= spread:
                             better_spot_coming = True
 
-            # Dynamic Spread Score
             score = spread * 10.0
 
-            # If a team has a significantly better spot next week, hold them
             if better_spot_coming:
-                score -= 40.0
+                score -= 60.0
 
-            # In Weeks 1-6: Strictly penalize fragile favorites under 8.0 points
             if w <= 6 and spread < 8.0:
                 score -= 50.0
 
-            # In Week 14: Penalize sub-8pt favorites to prevent Tampa Bay trap
             if w == 14 and spread < 8.0:
                 score -= 50.0
 
@@ -294,12 +289,9 @@ def run_backtest_pipeline():
                     matrix[cand_row_num - 1][7] = m_prob_display
                     matrix[cand_row_num - 1][8] = mod_prob_display
 
-        # 1. Update Grid Values
         sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
 
-        # 2. Build Single Consolidated Batch Payload
         requests_payload = []
-
         requests_payload.append({
             "unmergeCells": {
                 "range": {
