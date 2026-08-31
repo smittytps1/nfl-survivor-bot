@@ -61,33 +61,28 @@ def team_to_abbr(name: str) -> str:
 def spread_to_market_prob(spread: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
-# Model Strategy Engine supporting multiple calibration profiles
 def calculate_calibrated_prob(spread: float, is_home: bool, week: int, profile="baseline") -> float:
     m_prob = spread_to_market_prob(spread)
     
     if profile == "baseline":
-        # The original uncalibrated formula
         home_boost = 0.025 if is_home else -0.015
         rest_boost = 0.015 if abs(spread) >= 7.0 else 0.005
         epa_edge = 0.020 if abs(spread) >= 8.5 else 0.010
         return min(0.96, max(0.51, round(m_prob + home_boost + rest_boost + epa_edge, 3)))
         
     elif profile == "conservative_early":
-        # Calibrated: Penalizes early season uncertainty (Wks 1-4) & requires strict spread safety
         early_penalty = -0.040 if week <= 4 else 0.0
-        # Reduced home/trench double-counting
         home_edge = 0.010 if is_home else -0.005
         spread_tier = 0.015 if abs(spread) >= 9.5 else (-0.025 if abs(spread) < 6.0 else 0.0)
         return min(0.95, max(0.50, round(m_prob + early_penalty + home_edge + spread_tier, 3)))
 
     elif profile == "heavy_favorite_bias":
-        # Survivor Strategy: Heavily weights the biggest spread on the board regardless of future value
         if abs(spread) >= 8.5:
             return min(0.96, m_prob + 0.05)
         elif abs(spread) >= 6.0:
             return m_prob
         else:
-            return max(0.40, m_prob - 0.10) # Severely penalizes sub-6 point games
+            return max(0.40, m_prob - 0.10)
 
 def solve_path(weekly_slates, profile):
     num_teams = len(ALL_TEAMS)
@@ -159,7 +154,6 @@ def run_diagnostics():
 
             weekly_slates[w].append(game_data)
 
-        # Evaluate each strategy profile
         for p in profiles:
             optimal_path = solve_path(weekly_slates, p)
             elim_wk = None
@@ -187,7 +181,6 @@ def run_diagnostics():
                 "wins": total_wins
             }
 
-    # Print Diagnostic Report to Console
     print("\n--- 💥 ROOT CAUSE ELIMINATION FORENSICS (Original Formula) ---")
     diag_df = pd.DataFrame(diagnostic_rows)
     print(diag_df.to_string(index=False))
@@ -200,7 +193,6 @@ def run_diagnostics():
         comp_data.append({"Strategy Profile": p, "Avg Weeks Survived": f"{avg_survived:.1f}/18", "Total Win Record": f"{total_wins}/90"})
     print(pd.DataFrame(comp_data).to_string(index=False))
 
-    # Output directly to a "Diagnostic Summary" tab in Google Sheets
     try:
         creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
         if creds_json:
