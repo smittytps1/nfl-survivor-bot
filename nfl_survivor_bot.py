@@ -5,8 +5,10 @@ import os
 import re
 from google.oauth2.service_account import Credentials
 import gspread
+import numpy as np
 import pandas as pd
 import requests
+from scipy.optimize import linear_sum_assignment
 
 # --- SPREADSHEET CONFIGURATION ---
 SHEET_TITLE = "NFL Picks"
@@ -69,61 +71,54 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
 
 def solve_survivor_path(all_weekly_slates, locked_picks):
     """
-    Deep-Season Forward-Solver:
-    Scans the entire rest of the season to hoard elite teams for later weeks
-    and aggressively penalizes road games to minimize variance.
+    Global Exact Solver using Maximum-Weight Bipartite Matching.
+    Mathematically guarantees the highest possible cumulative win probability
+    across the entire 18-week season.
     """
-    used_teams = set()
+    # 1. Collect all unique candidate teams across all weeks
+    all_teams = set()
+    for w in range(1, WEEKS + 1):
+        for c in all_weekly_slates.get(w, []):
+            all_teams.add(c["team"])
+    for team in locked_picks.values():
+        if team:
+            all_teams.add(team)
+            
+    team_list = sorted(list(all_teams))
+    team_to_idx = {team: i for i, team in enumerate(team_list)}
+    num_teams = len(team_list)
+
+    # 2. Build cost matrix: rows = weeks (0..17), cols = teams
+    # We want to maximize sum(ln(P)), so cost = -ln(P) (minimizing negative log-prob)
+    cost_matrix = np.full((WEEKS, num_teams), 1e6)  # High penalty for invalid picks
+
+    for w in range(1, WEEKS + 1):
+        row = w - 1
+        locked_team = locked_picks.get(w)
+
+        if locked_team and locked_team in team_to_idx:
+            # Force the locked team for this week
+            col = team_to_idx[locked_team]
+            cost_matrix[row, col] = -100.0  # Dominant incentive to force match
+        else:
+            for cand in all_weekly_slates.get(w, []):
+                t = cand["team"]
+                prob = cand.get("mod_prob")
+                if prob is not None and prob > 0:
+                    col = team_to_idx[t]
+                    # Minimize negative log probability
+                    cost_matrix[row, col] = -math.log(prob)
+
+    # 3. Solve exact linear sum assignment
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
     optimal = {}
-
-    # Lock in manual picks first
-    for w in range(1, WEEKS + 1):
-        if w in locked_picks and locked_picks[w]:
-            used_teams.add(locked_picks[w])
-
-    for w in range(1, WEEKS + 1):
-        if w in locked_picks and locked_picks[w]:
-            optimal[w] = locked_picks[w]
-            continue
-
-        cands = [c for c in all_weekly_slates.get(w, []) if c["team"] not in used_teams and c["mod_prob"] is not None]
-        if not cands:
-            optimal[w] = ""
-            continue
-
-        scored_cands = []
-        for cand in cands:
-            team = cand["team"]
-            spread = abs(cand.get("spread", 0.0))
-
-            # 1. Global Lookahead: Find the best future spread for this team
-            max_future_spread = 0.0
-            for next_w in range(w + 1, WEEKS + 1):
-                for fc in all_weekly_slates.get(next_w, []):
-                    if fc["team"] == team:
-                        f_spread = abs(fc.get("spread", 0.0))
-                        if f_spread > max_future_spread:
-                            max_future_spread = f_spread
-
-            # Base score is driven by the current week's spread
-            score = spread * 10.0
-
-            # 2. Save Elite Spots: If they have a massive future matchup (>8.5 spread), heavily penalize using them now
-            if max_future_spread > max(spread + 1.0, 8.5):
-                # The larger the difference between their future value and current value, the harsher the penalty
-                score -= (max_future_spread - spread) * 15.0
-
-            # 3. Variance Control: Heavily penalize picking road teams
-            if not cand.get("home", False):
-                score -= 20.0
-
-            scored_cands.append((score, cand))
-
-        # Sort by highest computed score
-        scored_cands.sort(key=lambda x: x[0], reverse=True)
-        best_pick = scored_cands[0][1]["team"]
-        optimal[w] = best_pick
-        used_teams.add(best_pick)
+    for r, c in zip(row_ind, col_ind):
+        week = r + 1
+        if cost_matrix[r, c] < 1e5:  # Valid assignment found
+            optimal[week] = team_list[c]
+        else:
+            optimal[week] = ""
 
     return optimal
 
@@ -139,7 +134,7 @@ def fetch_online_schedule():
             # Filter for correct season and regular season only
             df = df[(df['season'] == SEASON_YEAR) & (df['game_type'] == 'REG')]
             
-            # NEW CONSTRAINT: Strictly filter out Thursday, Friday, and Saturday games
+            # STRICT FILTER: Exclude Thursday, Friday, and Saturday games
             if 'weekday' in df.columns:
                 df = df[df['weekday'].isin(['Sunday', 'Monday'])]
                 
@@ -256,6 +251,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
                 "spread": None, "m_prob": None, "mod_prob": None, "home": True
             })
 
+    # Sort strictly by model probability so the top 5 are always the safest bets
     candidates.sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0), reverse=True)
     return candidates[:5]
 
@@ -287,6 +283,7 @@ def sync_to_google_sheets():
     sheet.clear()
     total_grid_rows = 1 + (WEEKS * 6)
 
+    # Initial grid clear/reset format
     sheet.format(f"A1:I{total_grid_rows + 20}", {
         "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
         "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
@@ -305,8 +302,10 @@ def sync_to_google_sheets():
         espn_odds = fetch_espn_live_odds(w)
         all_weekly_slates[w] = build_candidates_for_week(schedule[w], live_odds_map, espn_odds, w)
 
+    # Call the new exact global solver
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
+    # Calculate actual cumulative season probability
     cum_prob = 1.0
     for w in range(1, WEEKS + 1):
         effective_team = locked_picks.get(w, optimal_path.get(w, ""))
@@ -371,6 +370,7 @@ def sync_to_google_sheets():
                 matrix[cand_row_num - 1][7] = m_prob_display
                 matrix[cand_row_num - 1][8] = mod_prob_display
 
+    # Update data in one shot
     sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
 
     for rng in merge_ranges:
@@ -379,6 +379,7 @@ def sync_to_google_sheets():
         except Exception:
             pass
 
+    # Batch format Google Sheets to avoid API rate limiting
     batch_formats = [
         {
             "range": "A1:I1",
@@ -433,10 +434,11 @@ def sync_to_google_sheets():
             }
         })
 
+    # Execute all formatting changes in one single API request
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with dynamic deep-season survivor model.")
+    print("Success: Google Sheet updated cleanly with strict Sunday/Monday global exact solver.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
