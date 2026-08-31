@@ -166,30 +166,22 @@ def run_backtest_pipeline():
                 m_prob = spread_to_market_prob(home_spread)
                 mod_prob = calculate_model_prob(m_prob, True, home_spread, w)
                 weekly_slates[w].append({
-                    "team": h_team,
-                    "opponent": a_team,
+                    "team": h_team, "opponent": a_team,
                     "matchup": f"{a_team} @ {h_team}",
-                    "is_home": True,
-                    "spread": home_spread,
-                    "m_prob": m_prob,
-                    "mod_prob": mod_prob,
-                    "team_score": h_score,
-                    "opp_score": a_score
+                    "is_home": True, "spread": home_spread,
+                    "m_prob": m_prob, "mod_prob": mod_prob,
+                    "team_score": h_score, "opp_score": a_score
                 })
             else:
                 away_spread = -home_spread
                 m_prob = spread_to_market_prob(away_spread)
                 mod_prob = calculate_model_prob(m_prob, False, away_spread, w)
                 weekly_slates[w].append({
-                    "team": a_team,
-                    "opponent": h_team,
+                    "team": a_team, "opponent": h_team,
                     "matchup": f"{a_team} @ {h_team}",
-                    "is_home": False,
-                    "spread": away_spread,
-                    "m_prob": m_prob,
-                    "mod_prob": mod_prob,
-                    "team_score": a_score,
-                    "opp_score": h_score
+                    "is_home": False, "spread": away_spread,
+                    "m_prob": m_prob, "mod_prob": mod_prob,
+                    "team_score": a_score, "opp_score": h_score
                 })
 
         for w in range(1, WEEKS + 1):
