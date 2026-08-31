@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import time
 import gspread
 import numpy as np
 import pandas as pd
@@ -61,30 +62,17 @@ def team_to_abbr(name: str) -> str:
 def spread_to_market_prob(spread: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
-def calculate_calibrated_prob(spread: float, is_home: bool, week: int, profile="baseline") -> float:
-    m_prob = spread_to_market_prob(spread)
+def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
+    if market_prob is None:
+        return None
+    early_discount = -0.035 if week <= 4 else 0.0
+    home_edge = 0.010 if is_home else -0.005
+    heavy_fav_boost = 0.020 if abs(spread) >= 9.5 else (-0.030 if abs(spread) < 6.5 else 0.0)
     
-    if profile == "baseline":
-        home_boost = 0.025 if is_home else -0.015
-        rest_boost = 0.015 if abs(spread) >= 7.0 else 0.005
-        epa_edge = 0.020 if abs(spread) >= 8.5 else 0.010
-        return min(0.96, max(0.51, round(m_prob + home_boost + rest_boost + epa_edge, 3)))
-        
-    elif profile == "conservative_early":
-        early_penalty = -0.040 if week <= 4 else 0.0
-        home_edge = 0.010 if is_home else -0.005
-        spread_tier = 0.015 if abs(spread) >= 9.5 else (-0.025 if abs(spread) < 6.0 else 0.0)
-        return min(0.95, max(0.50, round(m_prob + early_penalty + home_edge + spread_tier, 3)))
+    adj_prob = market_prob + early_discount + home_edge + heavy_fav_boost
+    return min(0.96, max(0.50, round(adj_prob, 3)))
 
-    elif profile == "heavy_favorite_bias":
-        if abs(spread) >= 8.5:
-            return min(0.96, m_prob + 0.05)
-        elif abs(spread) >= 6.0:
-            return m_prob
-        else:
-            return max(0.40, m_prob - 0.10)
-
-def solve_path(weekly_slates, profile):
+def solve_season_survivor_path(weekly_slates):
     num_teams = len(ALL_TEAMS)
     team_to_idx = {t: i for i, t in enumerate(ALL_TEAMS)}
     idx_to_team = {i: t for i, t in enumerate(ALL_TEAMS)}
@@ -95,9 +83,11 @@ def solve_path(weekly_slates, profile):
         row = w - 1
         for cand in weekly_slates.get(w, []):
             t_idx = team_to_idx.get(cand["team"])
-            prob = cand[f"prob_{profile}"]
-            if t_idx is not None and prob is not None:
-                cost_matrix[row, t_idx] = -math.log(prob)
+            if t_idx is not None and cand["mod_prob"] is not None:
+                if w <= 10 and cand["spread"] is not None and abs(cand["spread"]) < 6.5:
+                    cost_matrix[row, t_idx] = -math.log(max(0.40, cand["mod_prob"] - 0.15))
+                else:
+                    cost_matrix[row, t_idx] = -math.log(cand["mod_prob"])
 
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
     optimal = {}
@@ -108,20 +98,54 @@ def solve_path(weekly_slates, profile):
             optimal[r + 1] = ""
     return optimal
 
-def run_diagnostics():
+def get_spreadsheet_with_retries(client, title, max_retries=4):
+    for attempt in range(max_retries):
+        try:
+            return client.open(title)
+        except Exception as e:
+            print(f"Connection notice (Attempt {attempt+1}/{max_retries}): {e}. Retrying in 3s...")
+            time.sleep(3)
+    return client.open(title)
+
+def get_or_create_worksheet(spreadsheet, tab_title):
+    try:
+        ws = spreadsheet.worksheet(tab_title)
+        ws.clear()
+        return ws
+    except gspread.WorksheetNotFound:
+        return spreadsheet.add_worksheet(title=tab_title, rows=150, cols=12)
+
+def run_backtest_pipeline():
     print("=" * 80)
-    print("🔍 RUNNING SURVIVOR MODEL DIAGNOSTIC & FORENSIC ENGINE")
+    print("🏈 STARTING 5-YEAR NFL SURVIVOR BACKTESTER")
     print("=" * 80)
 
+    creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
+    if not creds_json:
+        raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable missing.")
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
+    client = gspread.authorize(creds)
+    spreadsheet = get_spreadsheet_with_retries(client, SHEET_TITLE)
+
+    print("Fetching historical game data from nflverse...")
     res = requests.get(DATA_URL, timeout=25)
+    if res.status_code != 200:
+        raise RuntimeError(f"Failed to fetch nflverse data. HTTP {res.status_code}")
+
     df_raw = pd.read_csv(io.StringIO(res.text), low_memory=False)
     df = df_raw[(df_raw["season"].isin(BACKTEST_SEASONS)) & (df_raw["game_type"] == "REG")].copy()
 
-    profiles = ["baseline", "conservative_early", "heavy_favorite_bias"]
-    profile_results = {p: {} for p in profiles}
-    diagnostic_rows = []
-
     for season in BACKTEST_SEASONS:
+        tab_name = f"Test {season}"
+        print(f"\nProcessing {season} Season -> Tab: '{tab_name}'...")
+        sheet = get_or_create_worksheet(spreadsheet, tab_name)
+        sheet_id = sheet.id
+
         season_df = df[df["season"] == season]
         weekly_slates = {w: [] for w in range(1, WEEKS + 1)}
 
@@ -132,103 +156,272 @@ def run_diagnostics():
 
             h_team = team_to_abbr(row["home_team"])
             a_team = team_to_abbr(row["away_team"])
-            h_score = int(row["home_score"]) if pd.notnull(row["home_score"]) else 0
-            a_score = int(row["away_score"]) if pd.notnull(row["away_score"]) else 0
+            h_score = int(row["home_score"]) if pd.notnull(row["home_score"]) else None
+            a_score = int(row["away_score"]) if pd.notnull(row["away_score"]) else None
+
             spread_val = float(row["spread_line"]) if pd.notnull(row.get("spread_line")) else 0.0
             home_spread = -spread_val
 
-            team = h_team if home_spread <= 0 else a_team
-            opp = a_team if home_spread <= 0 else h_team
-            eff_spread = home_spread if home_spread <= 0 else -home_spread
-            is_home = (home_spread <= 0)
-            t_score = h_score if is_home else a_score
-            o_score = a_score if is_home else h_score
+            if home_spread <= 0:
+                m_prob = spread_to_market_prob(home_spread)
+                mod_prob = calculate_model_prob(m_prob, True, home_spread, w)
+                weekly_slates[w].append({
+                    "team": h_team,
+                    "opponent": a_team,
+                    "matchup": f"{a_team} @ {h_team}",
+                    "is_home": True,
+                    "spread": home_spread,
+                    "m_prob": m_prob,
+                    "mod_prob": mod_prob,
+                    "team_score": h_score,
+                    "opp_score": a_score
+                })
+            else:
+                away_spread = -home_spread
+                m_prob = spread_to_market_prob(away_spread)
+                mod_prob = calculate_model_prob(m_prob, False, away_spread, w)
+                weekly_slates[w].append({
+                    "team": a_team,
+                    "opponent": h_team,
+                    "matchup": f"{a_team} @ {h_team}",
+                    "is_home": False,
+                    "spread": away_spread,
+                    "m_prob": m_prob,
+                    "mod_prob": mod_prob,
+                    "team_score": a_score,
+                    "opp_score": h_score
+                })
 
-            game_data = {
-                "team": team, "opponent": opp, "matchup": f"{opp} @ {team}" if is_home else f"{team} @ {opp}",
-                "is_home": is_home, "spread": eff_spread, "team_score": t_score, "opp_score": o_score
-            }
+        for w in range(1, WEEKS + 1):
+            weekly_slates[w].sort(
+                key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0),
+                reverse=True
+            )
 
-            for p in profiles:
-                game_data[f"prob_{p}"] = calculate_calibrated_prob(eff_spread, is_home, w, profile=p)
+        optimal_path = solve_season_survivor_path(weekly_slates)
 
-            weekly_slates[w].append(game_data)
+        eliminated_week = None
+        cum_prob = 1.0
+        weekly_outcomes = {}
 
-        for p in profiles:
-            optimal_path = solve_path(weekly_slates, p)
-            elim_wk = None
-            total_wins = 0
+        for w in range(1, WEEKS + 1):
+            pick = optimal_path.get(w, "")
+            match = next((c for c in weekly_slates[w] if c["team"] == pick), None)
+            if match:
+                cum_prob *= match["mod_prob"]
+                t_score = match["team_score"]
+                o_score = match["opp_score"]
 
-            for w in range(1, WEEKS + 1):
-                pick = optimal_path.get(w, "")
-                match = next((c for c in weekly_slates[w] if c["team"] == pick), None)
-                if match:
-                    if match["team_score"] > match["opp_score"]:
-                        total_wins += 1
+                if t_score is not None and o_score is not None:
+                    if t_score > o_score:
+                        status = "✅ WIN"
+                    elif t_score == o_score:
+                        status = "❌ TIE"
                     else:
-                        if elim_wk is None:
-                            elim_wk = w
-                            if p == "baseline":
-                                diagnostic_rows.append({
-                                    "Season": season, "Week": w, "Pick": pick, "Opp": match["opponent"],
-                                    "Line": f"{match['spread']:+.1f}", "Model %": f"{match[f'prob_{p}']*100:.1f}%",
-                                    "Result": f"Loss ({match['team_score']}-{match['opp_score']})",
-                                    "Root Cause": "Sub-8pt road/early trap" if abs(match["spread"]) < 8 else "Heavy upset variance"
-                                })
+                        status = "❌ LOSS"
+                else:
+                    status = "UNPLAYED"
 
-            profile_results[p][season] = {
-                "eliminated_week": elim_wk if elim_wk is not None else 18,
-                "wins": total_wins
+                if ("LOSS" in status or "TIE" in status) and eliminated_week is None:
+                    eliminated_week = w
+
+                weekly_outcomes[w] = {
+                    "pick_display": f"{pick} ({status} {t_score}-{o_score})",
+                    "status": status
+                }
+            else:
+                weekly_outcomes[w] = {"pick_display": pick, "status": ""}
+
+        total_grid_rows = 1 + (WEEKS * 6)
+        headers = [
+            "Week", "Recommended Pick", "|", "Historical Outcome",
+            "Candidate Team", "Matchup", "Line", "Market Win %", "Model Win %"
+        ]
+        matrix = [["" for _ in range(9)] for _ in range(total_grid_rows + 2)]
+        matrix[0] = headers
+
+        for w in range(1, WEEKS + 1):
+            r_idx = w
+            matrix[r_idx][0] = f"Week {w}"
+            matrix[r_idx][1] = optimal_path.get(w, "")
+            matrix[r_idx][2] = ""
+            matrix[r_idx][3] = weekly_outcomes[w]["pick_display"]
+
+        survived_text = "🏆 SURVIVED 18-0" if eliminated_week is None else f"❌ OUT WK {eliminated_week}"
+        matrix[19][0] = f"🏆 Season Result ({survived_text})"
+        matrix[19][1] = f"{cum_prob * 100:.2f}% Model Proj"
+
+        yellow_row_indices = []
+        merge_row_indices = []
+
+        for w in range(1, WEEKS + 1):
+            rec_team = optimal_path.get(w, "")
+            cands = weekly_slates.get(w, [])
+            block_start_row = 1 + (w - 1) * 6 + 1
+
+            matrix[block_start_row - 1][4] = f"Top candidates for Week {w}"
+            merge_row_indices.append(block_start_row)
+
+            for i in range(5):
+                cand_row_num = block_start_row + 1 + i
+                if i < len(cands):
+                    cand = cands[i]
+                    is_rec = (cand["team"] == rec_team and rec_team != "")
+                    if is_rec:
+                        yellow_row_indices.append(cand_row_num)
+
+                    team_display = f"**{cand['team']}**" if cand.get("is_home", False) else cand["team"]
+                    spread_display = f"{cand['spread']:+.1f}" if cand["spread"] is not None else ""
+                    m_prob_display = f"{cand['m_prob'] * 100:.1f}%" if cand["m_prob"] is not None else ""
+                    mod_prob_display = f"{cand['mod_prob'] * 100:.1f}%" if cand["mod_prob"] is not None else ""
+
+                    matrix[cand_row_num - 1][4] = team_display
+                    matrix[cand_row_num - 1][5] = cand.get("matchup", "")
+                    matrix[cand_row_num - 1][6] = spread_display
+                    matrix[cand_row_num - 1][7] = m_prob_display
+                    matrix[cand_row_num - 1][8] = mod_prob_display
+
+        # 1. Update Grid Values
+        sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
+
+        # 2. Build Single Consolidated Batch Update (Merges + Formats)
+        requests_payload = []
+
+        requests_payload.append({
+            "unmergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": total_grid_rows + 20,
+                    "startColumnIndex": 0, "endColumnIndex": 9
+                }
             }
+        })
 
-    comp_data = []
-    for p in profiles:
-        avg_survived = np.mean([profile_results[p][s]["eliminated_week"] for s in BACKTEST_SEASONS])
-        total_wins = sum([profile_results[p][s]["wins"] for s in BACKTEST_SEASONS])
-        comp_data.append({"Strategy Profile": p, "Avg Weeks Survived": f"{avg_survived:.1f}/18", "Total Win Record": f"{total_wins}/90"})
+        for r in merge_row_indices:
+            requests_payload.append({
+                "mergeCells": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": r - 1, "endRowIndex": r,
+                        "startColumnIndex": 4, "endColumnIndex": 9
+                    },
+                    "mergeType": "MERGE_ALL"
+                }
+            })
 
-    # Write to Google Sheets with full Drive & Spreadsheet OAuth Scopes
-    creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
-    if not creds_json:
-        raise ValueError("GCP_SERVICE_ACCOUNT_JSON missing.")
+        requests_payload.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": total_grid_rows + 20,
+                    "startColumnIndex": 0, "endColumnIndex": 9
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                        "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat)"
+            }
+        })
 
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
-    client = gspread.authorize(creds)
-    spreadsheet = client.open(SHEET_TITLE)
-    
-    try:
-        diag_sheet = spreadsheet.worksheet("Diagnostic Summary")
-        diag_sheet.clear()
-    except gspread.WorksheetNotFound:
-        diag_sheet = spreadsheet.add_worksheet(title="Diagnostic Summary", rows=50, cols=10)
+        requests_payload.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": 1,
+                    "startColumnIndex": 0, "endColumnIndex": 9
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+                        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                        "horizontalAlignment": "CENTER"
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+            }
+        })
 
-    export_matrix = [
-        ["🔍 SURVIVOR MODEL 5-YEAR POST-MORTEM & FORMULA TUNING", "", "", "", "", "", "", ""],
-        ["", "", "", "", "", "", "", ""],
-        ["Season", "Elimination Week", "Pick Chosen", "Opponent", "Line", "Model Prob", "Final Score", "Forensic Root Cause"]
-    ]
+        requests_payload.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": total_grid_rows + 2,
+                    "startColumnIndex": 2, "endColumnIndex": 3
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor)"
+            }
+        })
 
-    for d in diagnostic_rows:
-        export_matrix.append([
-            d["Season"], f"Week {d['Week']}", d["Pick"], d["Opp"], d["Line"], d["Model %"], d["Result"], d["Root Cause"]
-        ])
+        requests_payload.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 19, "endRowIndex": 20,
+                    "startColumnIndex": 0, "endColumnIndex": 2
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+                        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                        "horizontalAlignment": "CENTER"
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+            }
+        })
 
-    export_matrix.extend([
-        ["", "", "", "", "", "", "", ""],
-        ["STRATEGY COMPARISON & CALIBRATION BENCHMARKS", "", "", "", "", "", "", ""],
-        ["Profile", "Average Weeks Survived", "Total 5-Year Win Count", "Key Takeaway", "", "", "", ""]
-    ])
+        for r in merge_row_indices:
+            requests_payload.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": r - 1, "endRowIndex": r,
+                        "startColumnIndex": 4, "endColumnIndex": 9
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {"red": 0.83, "green": 0.90, "blue": 0.95},
+                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.05, "green": 0.16, "blue": 0.28}},
+                            "horizontalAlignment": "CENTER"
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+                }
+            })
 
-    for c in comp_data:
-        takeaway = "Overfits future value, takes weak early favorites" if c["Strategy Profile"] == "baseline" else "Safeguards Weeks 1-4 and enforces spread floors"
-        export_matrix.append([c["Strategy Profile"], c["Avg Weeks Survived"], c["Total Win Record"], takeaway, "", "", "", ""])
+        for r in yellow_row_indices:
+            requests_payload.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": r - 1, "endRowIndex": r,
+                        "startColumnIndex": 4, "endColumnIndex": 9
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {"red": 1.0, "green": 0.95, "blue": 0.55},
+                            "textFormat": {"bold": True}
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat)"
+                }
+            })
 
-    diag_sheet.update(range_name=f"A1:H{len(export_matrix)}", values=export_matrix)
-    print("\n✅ Successfully written to 'Diagnostic Summary' tab in Google Sheets.")
+        spreadsheet.batch_update({"requests": requests_payload})
+        print(f"Tab '{tab_name}' generated successfully. Result: {survived_text}")
+        time.sleep(2)
+
+    print("\n" + "=" * 80)
+    print("✅ 5-YEAR BACKTEST COMPLETE: ALL HISTORICAL TABS CREATED IN GOOGLE SHEETS")
+    print("=" * 80)
 
 if __name__ == "__main__":
-    run_diagnostics()
+    run_backtest_pipeline()
