@@ -181,61 +181,53 @@ def run_diagnostics():
                 "wins": total_wins
             }
 
-    print("\n--- 💥 ROOT CAUSE ELIMINATION FORENSICS (Original Formula) ---")
-    diag_df = pd.DataFrame(diagnostic_rows)
-    print(diag_df.to_string(index=False))
-
-    print("\n--- 📊 STRATEGY COMPARISON (Average Weeks Survived) ---")
     comp_data = []
     for p in profiles:
         avg_survived = np.mean([profile_results[p][s]["eliminated_week"] for s in BACKTEST_SEASONS])
         total_wins = sum([profile_results[p][s]["wins"] for s in BACKTEST_SEASONS])
         comp_data.append({"Strategy Profile": p, "Avg Weeks Survived": f"{avg_survived:.1f}/18", "Total Win Record": f"{total_wins}/90"})
-    print(pd.DataFrame(comp_data).to_string(index=False))
 
-    # Write to Google Sheets with full Drive and Spreadsheet scopes
+    creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
+    if not creds_json:
+        raise ValueError("GCP_SERVICE_ACCOUNT_JSON missing.")
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
+    client = gspread.authorize(creds)
+    spreadsheet = client.open(SHEET_TITLE)
+    
     try:
-        creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
-        if creds_json:
-            scopes = [
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive"
-            ]
-            creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
-            client = gspread.authorize(creds)
-            spreadsheet = client.open(SHEET_TITLE)
-            
-            try:
-                diag_sheet = spreadsheet.worksheet("Diagnostic Summary")
-                diag_sheet.clear()
-            except gspread.WorksheetNotFound:
-                diag_sheet = spreadsheet.add_worksheet(title="Diagnostic Summary", rows=40, cols=10)
+        diag_sheet = spreadsheet.worksheet("Diagnostic Summary")
+        diag_sheet.clear()
+    except gspread.WorksheetNotFound:
+        diag_sheet = spreadsheet.add_worksheet(title="Diagnostic Summary", rows=50, cols=10)
 
-            export_matrix = [
-                ["🔍 SURVIVOR MODEL 5-YEAR POST-MORTEM & FORMULA TUNING"],
-                [""],
-                ["Season", "Elimination Week", "Pick Chosen", "Opponent", "Line", "Model Prob", "Final Score", "Forensic Root Cause"]
-            ]
+    export_matrix = [
+        ["🔍 SURVIVOR MODEL 5-YEAR POST-MORTEM & FORMULA TUNING", "", "", "", "", "", "", ""],
+        ["", "", "", "", "", "", "", ""],
+        ["Season", "Elimination Week", "Pick Chosen", "Opponent", "Line", "Model Prob", "Final Score", "Forensic Root Cause"]
+    ]
 
-            for d in diagnostic_rows:
-                export_matrix.append([
-                    d["Season"], f"Week {d['Week']}", d["Pick"], d["Opp"], d["Line"], d["Model %"], d["Result"], d["Root Cause"]
-                ])
+    for d in diagnostic_rows:
+        export_matrix.append([
+            d["Season"], f"Week {d['Week']}", d["Pick"], d["Opp"], d["Line"], d["Model %"], d["Result"], d["Root Cause"]
+        ])
 
-            export_matrix.extend([
-                [""],
-                ["STRATEGY COMPARISON & CALIBRATION BENCHMARKS"],
-                ["Profile", "Average Weeks Survived", "Total 5-Year Win Count", "Key Takeaway"]
-            ])
+    export_matrix.extend([
+        ["", "", "", "", "", "", "", ""],
+        ["STRATEGY COMPARISON & CALIBRATION BENCHMARKS", "", "", "", "", "", "", ""],
+        ["Profile", "Average Weeks Survived", "Total 5-Year Win Count", "Key Takeaway", "", "", "", ""]
+    ])
 
-            for c in comp_data:
-                takeaway = "Overfits future value, takes weak early favorites" if c["Strategy Profile"] == "baseline" else "Safeguards Weeks 1-4 and enforces spread floors"
-                export_matrix.append([c["Strategy Profile"], c["Avg Weeks Survived"], c["Total Win Record"], takeaway])
+    for c in comp_data:
+        takeaway = "Overfits future value, takes weak early favorites" if c["Strategy Profile"] == "baseline" else "Safeguards Weeks 1-4 and enforces spread floors"
+        export_matrix.append([c["Strategy Profile"], c["Avg Weeks Survived"], c["Total Win Record"], takeaway, "", "", "", ""])
 
-            diag_sheet.update(range_name=f"A1:H{len(export_matrix)}", values=export_matrix)
-            print("\n✅ Successfully written to 'Diagnostic Summary' tab in Google Sheets.")
-    except Exception as e:
-        print(f"Notice writing to sheets: {e}")
+    diag_sheet.update(range_name=f"A1:H{len(export_matrix)}", values=export_matrix)
+    print("\n✅ Successfully written to 'Diagnostic Summary' tab in Google Sheets.")
 
 if __name__ == "__main__":
     run_diagnostics()
