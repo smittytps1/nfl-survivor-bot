@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import time
 import gspread
 import numpy as np
 import pandas as pd
@@ -99,7 +100,7 @@ def get_or_create_worksheet(spreadsheet, tab_title):
         ws.clear()
         return ws
     except gspread.WorksheetNotFound:
-        return spreadsheet.add_worksheet(title=tab_title, rows=150, cols=15)
+        return spreadsheet.add_worksheet(title=tab_title, rows=150, cols=12)
 
 def run_backtest_pipeline():
     print("=" * 80)
@@ -128,6 +129,7 @@ def run_backtest_pipeline():
         tab_name = f"Test {season}"
         print(f"\nProcessing {season} Season -> Tab: '{tab_name}'...")
         sheet = get_or_create_worksheet(spreadsheet, tab_name)
+        sheet_id = sheet.id
 
         season_df = df[df["season"] == season]
         weekly_slates = {w: [] for w in range(1, WEEKS + 1)}
@@ -206,9 +208,8 @@ def run_backtest_pipeline():
                 else:
                     status = "UNPLAYED"
 
-                if "LOSS" in status or "TIE" in status:
-                    if eliminated_week is None:
-                        eliminated_week = w
+                if ("LOSS" in status or "TIE" in status) and eliminated_week is None:
+                    eliminated_week = w
 
                 weekly_outcomes[w] = {
                     "pick_display": f"{pick} ({status} {t_score}-{o_score})",
@@ -234,22 +235,21 @@ def run_backtest_pipeline():
             matrix[r_idx][2] = ""
             matrix[r_idx][3] = weekly_outcomes[w]["pick_display"]
 
-        # Row 20 Summary
         survived_text = "🏆 SURVIVED 18-0" if eliminated_week is None else f"❌ OUT WK {eliminated_week}"
         matrix[19][0] = f"🏆 Season Result ({survived_text})"
         matrix[19][1] = f"{cum_prob * 100:.2f}% Model Proj"
 
-        yellow_rows = []
-        merge_ranges = []
+        yellow_row_indices = []
+        merge_row_indices = []
 
-        # Columns E-I
+        # Columns E-I (Weeks 1 to 18)
         for w in range(1, WEEKS + 1):
             rec_team = optimal_path.get(w, "")
             cands = weekly_slates.get(w, [])
             block_start_row = 1 + (w - 1) * 6 + 1
 
             matrix[block_start_row - 1][4] = f"Top candidates for Week {w}"
-            merge_ranges.append(f"E{block_start_row}:I{block_start_row}")
+            merge_row_indices.append(block_start_row)
 
             for i in range(5):
                 cand_row_num = block_start_row + 1 + i
@@ -257,7 +257,7 @@ def run_backtest_pipeline():
                     cand = cands[i]
                     is_rec = (cand["team"] == rec_team and rec_team != "")
                     if is_rec:
-                        yellow_rows.append(cand_row_num)
+                        yellow_row_indices.append(cand_row_num)
 
                     team_display = f"**{cand['team']}**" if cand.get("is_home", False) else cand["team"]
                     spread_display = f"{cand['spread']:+.1f}" if cand["spread"] is not None else ""
@@ -270,62 +270,154 @@ def run_backtest_pipeline():
                     matrix[cand_row_num - 1][7] = m_prob_display
                     matrix[cand_row_num - 1][8] = mod_prob_display
 
-        # Write data to Google Sheet
+        # 1. Write Matrix Values
         sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
 
-        # Format styles
-        sheet.format(f"A1:I{total_grid_rows + 20}", {
-            "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
-            "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
+        # 2. Build Single Consolidated Batch Update (Merges + Formats)
+        requests_payload = []
+
+        # Unmerge any legacy cells
+        requests_payload.append({
+            "unmergeCells": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": total_grid_rows + 20,
+                    "startColumnIndex": 0, "endColumnIndex": 9
+                }
+            }
         })
 
-        for rng in merge_ranges:
-            try:
-                sheet.merge_cells(rng, merge_type="MERGE_ALL")
-            except Exception:
-                pass
-
-        sheet.format("A1:I1", {
-            "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
-            "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
-            "horizontalAlignment": "CENTER"
-        })
-
-        sheet.format(f"C1:C{total_grid_rows + 2}", {"backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}})
-        sheet.format(f"A2:B{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-        sheet.format(f"D2:D{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
-        sheet.format(f"E2:I{total_grid_rows + 2}", {"horizontalAlignment": "CENTER"})
-
-        sheet.format("A20:B20", {
-            "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
-            "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
-            "horizontalAlignment": "CENTER"
-        })
-
-        batch_formats = []
-        for rng in merge_ranges:
-            batch_formats.append({
-                "range": rng,
-                "format": {
-                    "backgroundColor": {"red": 0.83, "green": 0.90, "blue": 0.95},
-                    "textFormat": {"bold": True, "foregroundColor": {"red": 0.05, "green": 0.16, "blue": 0.28}},
-                    "horizontalAlignment": "CENTER"
+        # Merge weekly headers E:I
+        for r in merge_row_indices:
+            requests_payload.append({
+                "mergeCells": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": r - 1, "endRowIndex": r,
+                        "startColumnIndex": 4, "endColumnIndex": 9
+                    },
+                    "mergeType": "MERGE_ALL"
                 }
             })
 
-        for r_idx in yellow_rows:
-            batch_formats.append({
-                "range": f"E{r_idx}:I{r_idx}",
-                "format": {
-                    "backgroundColor": {"red": 1.0, "green": 0.95, "blue": 0.55},
-                    "textFormat": {"bold": True}
+        # Base white grid styling
+        requests_payload.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": total_grid_rows + 20,
+                    "startColumnIndex": 0, "endColumnIndex": 9
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                        "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat)"
+            }
+        })
+
+        # Row 1 Main Header
+        requests_payload.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": 1,
+                    "startColumnIndex": 0, "endColumnIndex": 9
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+                        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                        "horizontalAlignment": "CENTER"
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+            }
+        })
+
+        # Column C Divider
+        requests_payload.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0, "endRowIndex": total_grid_rows + 2,
+                    "startColumnIndex": 2, "endColumnIndex": 3
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.62, "green": 0.62, "blue": 0.62}
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor)"
+            }
+        })
+
+        # Row 20 Summary Banner
+        requests_payload.append({
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 19, "endRowIndex": 20,
+                    "startColumnIndex": 0, "endColumnIndex": 2
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+                        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                        "horizontalAlignment": "CENTER"
+                    }
+                },
+                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
+            }
+        })
+
+        # Light Blue Weekly Section Headers
+        for r in merge_row_indices:
+            requests_payload.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": r - 1, "endRowIndex": r,
+                        "startColumnIndex": 4, "endColumnIndex": 9
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {"red": 0.83, "green": 0.90, "blue": 0.95},
+                            "textFormat": {"bold": True, "foregroundColor": {"red": 0.05, "green": 0.16, "blue": 0.28}},
+                            "horizontalAlignment": "CENTER"
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)"
                 }
             })
 
-        if batch_formats:
-            sheet.batch_format(batch_formats)
+        # Yellow Highlighted Survivor Recommendations
+        for r in yellow_row_indices:
+            requests_payload.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": r - 1, "endRowIndex": r,
+                        "startColumnIndex": 4, "endColumnIndex": 9
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "backgroundColor": {"red": 1.0, "green": 0.95, "blue": 0.55},
+                            "textFormat": {"bold": True}
+                        }
+                    },
+                    "fields": "userEnteredFormat(backgroundColor,textFormat)"
+                }
+            })
 
+        # Execute all formatting and merges in 1 API call per tab
+        spreadsheet.batch_update({"requests": requests_payload})
         print(f"Tab '{tab_name}' generated successfully. Result: {survived_text}")
+
+        # Rate-limit safety buffer between seasons
+        time.sleep(2)
 
     print("\n" + "=" * 80)
     print("✅ 5-YEAR BACKTEST COMPLETE: ALL HISTORICAL TABS CREATED IN GOOGLE SHEETS")
