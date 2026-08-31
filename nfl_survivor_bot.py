@@ -65,7 +65,7 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
         return None
     early_discount = -0.035 if week <= 4 else 0.0
     home_edge = 0.010 if is_home else -0.005
-    heavy_fav_boost = 0.020 if abs(spread) >= 9.5 else (-0.030 if abs(spread) < 6.5 else 0.0)
+    heavy_fav_boost = 0.025 if abs(spread) >= 9.5 else (-0.035 if abs(spread) < 7.0 else 0.0)
     
     adj_prob = market_prob + early_discount + home_edge + heavy_fav_boost
     return min(0.96, max(0.50, round(adj_prob, 3)))
@@ -81,25 +81,30 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
         row = w - 1
         locked_team = locked_picks.get(w, "").strip().upper()
 
-        # Dynamic Future-Value Decay Multiplier
-        if w <= 6:
-            fv_weight = 0.20
-        elif w <= 12:
-            fv_weight = 0.60
-        else:
-            fv_weight = 1.00
-
         if locked_team and locked_team in team_to_idx:
             cost_matrix[row, team_to_idx[locked_team]] = -10000.0
         else:
             for cand in all_weekly_slates.get(w, []):
                 t_idx = team_to_idx.get(cand["team"])
-                if t_idx is not None and cand["mod_prob"] is not None:
-                    # Enforce strict safety floor for early weeks
-                    if w <= 10 and cand["spread"] is not None and abs(cand["spread"]) < 6.5:
-                        cost_matrix[row, t_idx] = -math.log(max(0.40, cand["mod_prob"] - 0.25)) * (1.0 + fv_weight)
-                    else:
-                        cost_matrix[row, t_idx] = -math.log(cand["mod_prob"]) * (1.0 + fv_weight)
+                if t_idx is None or cand["mod_prob"] is None:
+                    continue
+
+                spread = cand.get("spread", 0.0)
+
+                # Hard floor: penalize sub-7.0 pt favorites in early weeks
+                if w <= 8 and spread is not None and abs(spread) < 7.0:
+                    base_cost = -math.log(max(0.30, cand["mod_prob"] - 0.35)) + 50.0
+                # Dominance lock: force taking >=10 pt favorites in Weeks 1-6
+                elif w <= 6 and spread is not None and abs(spread) >= 10.0:
+                    base_cost = -math.log(cand["mod_prob"]) * 0.01
+                elif w <= 6:
+                    base_cost = -math.log(cand["mod_prob"]) * 0.30
+                elif w <= 12:
+                    base_cost = -math.log(cand["mod_prob"]) * 0.70
+                else:
+                    base_cost = -math.log(cand["mod_prob"]) * 1.00
+
+                cost_matrix[row, t_idx] = base_cost
 
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
     optimal = {}
@@ -131,29 +136,19 @@ def fetch_online_schedule():
 
     if not schedule_by_week[1]:
         schedule_by_week[1] = [
-            {"home_team": "LAC", "away_team": "ARI"},
-            {"home_team": "DET", "away_team": "NO"},
-            {"home_team": "CIN", "away_team": "TB"},
-            {"home_team": "KC", "away_team": "DEN"},
-            {"home_team": "PHI", "away_team": "WAS"},
-            {"home_team": "SEA", "away_team": "NE"},
-            {"home_team": "LAR", "away_team": "SF"},
-            {"home_team": "HOU", "away_team": "BUF"},
-            {"home_team": "PIT", "away_team": "ATL"},
-            {"home_team": "JAX", "away_team": "CLE"},
-            {"home_team": "TEN", "away_team": "NYJ"},
-            {"home_team": "IND", "away_team": "BAL"},
-            {"home_team": "LV", "away_team": "MIA"},
-            {"home_team": "MIN", "away_team": "GB"},
-            {"home_team": "NYG", "away_team": "DAL"},
-            {"home_team": "CAR", "away_team": "CHI"}
+            {"home_team": "LAC", "away_team": "ARI"}, {"home_team": "DET", "away_team": "NO"},
+            {"home_team": "CIN", "away_team": "TB"}, {"home_team": "KC", "away_team": "DEN"},
+            {"home_team": "PHI", "away_team": "WAS"}, {"home_team": "SEA", "away_team": "NE"},
+            {"home_team": "LAR", "away_team": "SF"}, {"home_team": "HOU", "away_team": "BUF"},
+            {"home_team": "PIT", "away_team": "ATL"}, {"home_team": "JAX", "away_team": "CLE"},
+            {"home_team": "TEN", "away_team": "NYJ"}, {"home_team": "IND", "away_team": "BAL"},
+            {"home_team": "LV", "away_team": "MIA"}, {"home_team": "MIN", "away_team": "GB"},
+            {"home_team": "NYG", "away_team": "DAL"}, {"home_team": "CAR", "away_team": "CHI"}
         ]
         for w in range(2, WEEKS + 1):
             schedule_by_week[w] = [
-                {"home_team": "BAL", "away_team": "LV"},
-                {"home_team": "DAL", "away_team": "NO"},
-                {"home_team": "SF", "away_team": "MIN"},
-                {"home_team": "BUF", "away_team": "MIA"},
+                {"home_team": "BAL", "away_team": "LV"}, {"home_team": "DAL", "away_team": "NO"},
+                {"home_team": "SF", "away_team": "MIN"}, {"home_team": "BUF", "away_team": "MIA"},
                 {"home_team": "KC", "away_team": "CIN"}
             ]
 
@@ -230,8 +225,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
                 m_prob = spread_to_market_prob(spread_val)
                 mod_prob = calculate_model_prob(m_prob, True, spread_val, week)
                 candidates.append({
-                    "team": h, "opponent": a,
-                    "matchup": f"{a} @ {h}",
+                    "team": h, "opponent": a, "matchup": f"{a} @ {h}",
                     "spread": spread_val, "m_prob": m_prob, "mod_prob": mod_prob, "home": True
                 })
             else:
@@ -239,14 +233,12 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
                 m_prob = spread_to_market_prob(away_spread)
                 mod_prob = calculate_model_prob(m_prob, False, away_spread, week)
                 candidates.append({
-                    "team": a, "opponent": h,
-                    "matchup": f"{a} @ {h}",
+                    "team": a, "opponent": h, "matchup": f"{a} @ {h}",
                     "spread": away_spread, "m_prob": m_prob, "mod_prob": mod_prob, "home": False
                 })
         else:
             candidates.append({
-                "team": h, "opponent": a,
-                "matchup": f"{a} @ {h}",
+                "team": h, "opponent": a, "matchup": f"{a} @ {h}",
                 "spread": None, "m_prob": None, "mod_prob": None, "home": True
             })
 
@@ -413,7 +405,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with dynamic tiered survival parameters.")
+    print("Success: Google Sheet updated cleanly with dynamic progressive safety model.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
