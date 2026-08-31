@@ -63,16 +63,15 @@ def spread_to_market_prob(spread: float) -> float:
 def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
     """
     Calibrated Model Win Probability:
-    - Incorporates early-season volatility discount (Weeks 1-4).
-    - Enforces safety floors against small road spreads.
-    - Prevents double-counting already baked into market lines.
+    - Weeks 1-4 early uncertainty discount (-3.5%).
+    - De-amplified home field boost (+1.0% home, -0.5% away) avoiding double-counting.
+    - Tiered safety adjustment (+2.0% for >=9.5 pt favorites, -3.0% penalty for <6.5 pt games).
     """
     if market_prob is None:
         return None
-        
     early_discount = -0.035 if week <= 4 else 0.0
     home_edge = 0.010 if is_home else -0.005
-    heavy_fav_boost = 0.020 if abs(spread) >= 9.5 else ( -0.030 if abs(spread) < 6.5 else 0.0 )
+    heavy_fav_boost = 0.020 if abs(spread) >= 9.5 else (-0.030 if abs(spread) < 6.5 else 0.0)
     
     adj_prob = market_prob + early_discount + home_edge + heavy_fav_boost
     return min(0.96, max(0.50, round(adj_prob, 3)))
@@ -237,7 +236,7 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
             for cand in all_weekly_slates.get(w, []):
                 t_idx = team_to_idx.get(cand["team"])
                 if t_idx is not None and cand["mod_prob"] is not None:
-                    # Enforce hard spread threshold for Weeks 1-10
+                    # Enforce strict safety floor for Weeks 1-10 (penalize sub-6.5 pt favorites)
                     if w <= 10 and cand["spread"] is not None and abs(cand["spread"]) < 6.5:
                         cost_matrix[row, t_idx] = -math.log(max(0.40, cand["mod_prob"] - 0.15))
                     else:
@@ -260,11 +259,9 @@ def sync_to_google_sheets():
     if not creds_json:
         raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable missing.")
 
-    creds_dict = json.loads(creds_json)
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
     client = gspread.authorize(creds)
-
     sheet = client.open(SHEET_TITLE).worksheet(TAB_NAME)
 
     existing_data = sheet.get_all_values()
@@ -371,8 +368,8 @@ def sync_to_google_sheets():
     for rng in merge_ranges:
         try:
             sheet.merge_cells(rng, merge_type="MERGE_ALL")
-        except Exception as e:
-            print(f"Notice on merge for {rng}: {e}")
+        except Exception:
+            pass
 
     sheet.format("A1:I1", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
