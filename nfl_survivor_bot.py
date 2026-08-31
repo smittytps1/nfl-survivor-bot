@@ -61,12 +61,6 @@ def spread_to_market_prob(spread: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
 def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
-    """
-    Calibrated Model Win Probability:
-    - Weeks 1-4 early uncertainty discount (-3.5%).
-    - De-amplified home field boost (+1.0% home, -0.5% away) avoiding double-counting.
-    - Tiered safety adjustment (+2.0% for >=9.5 pt favorites, -3.0% penalty for <6.5 pt games).
-    """
     if market_prob is None:
         return None
     early_discount = -0.035 if week <= 4 else 0.0
@@ -75,6 +69,46 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
     
     adj_prob = market_prob + early_discount + home_edge + heavy_fav_boost
     return min(0.96, max(0.50, round(adj_prob, 3)))
+
+def solve_survivor_path(all_weekly_slates, locked_picks):
+    num_teams = len(ALL_TEAMS)
+    team_to_idx = {t: i for i, t in enumerate(ALL_TEAMS)}
+    idx_to_team = {i: t for i, t in enumerate(ALL_TEAMS)}
+
+    cost_matrix = np.full((WEEKS, num_teams), fill_value=1e5)
+
+    for w in range(1, WEEKS + 1):
+        row = w - 1
+        locked_team = locked_picks.get(w, "").strip().upper()
+
+        # Dynamic Future-Value Decay Multiplier
+        if w <= 6:
+            fv_weight = 0.20
+        elif w <= 12:
+            fv_weight = 0.60
+        else:
+            fv_weight = 1.00
+
+        if locked_team and locked_team in team_to_idx:
+            cost_matrix[row, team_to_idx[locked_team]] = -10000.0
+        else:
+            for cand in all_weekly_slates.get(w, []):
+                t_idx = team_to_idx.get(cand["team"])
+                if t_idx is not None and cand["mod_prob"] is not None:
+                    # Enforce strict safety floor for early weeks
+                    if w <= 10 and cand["spread"] is not None and abs(cand["spread"]) < 6.5:
+                        cost_matrix[row, t_idx] = -math.log(max(0.40, cand["mod_prob"] - 0.25)) * (1.0 + fv_weight)
+                    else:
+                        cost_matrix[row, t_idx] = -math.log(cand["mod_prob"]) * (1.0 + fv_weight)
+
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    optimal = {}
+    for r, c in zip(row_ind, col_ind):
+        if cost_matrix[r, c] < 1e4:
+            optimal[r + 1] = idx_to_team[c]
+        else:
+            optimal[r + 1] = ""
+    return optimal
 
 def fetch_online_schedule():
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
@@ -218,38 +252,6 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
 
     candidates.sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0), reverse=True)
     return candidates[:5]
-
-def solve_survivor_path(all_weekly_slates, locked_picks):
-    num_teams = len(ALL_TEAMS)
-    team_to_idx = {t: i for i, t in enumerate(ALL_TEAMS)}
-    idx_to_team = {i: t for i, t in enumerate(ALL_TEAMS)}
-
-    cost_matrix = np.full((WEEKS, num_teams), fill_value=1e5)
-
-    for w in range(1, WEEKS + 1):
-        row = w - 1
-        locked_team = locked_picks.get(w, "").strip().upper()
-
-        if locked_team and locked_team in team_to_idx:
-            cost_matrix[row, team_to_idx[locked_team]] = -10000.0
-        else:
-            for cand in all_weekly_slates.get(w, []):
-                t_idx = team_to_idx.get(cand["team"])
-                if t_idx is not None and cand["mod_prob"] is not None:
-                    # Enforce strict safety floor for Weeks 1-10 (penalize sub-6.5 pt favorites)
-                    if w <= 10 and cand["spread"] is not None and abs(cand["spread"]) < 6.5:
-                        cost_matrix[row, t_idx] = -math.log(max(0.40, cand["mod_prob"] - 0.15))
-                    else:
-                        cost_matrix[row, t_idx] = -math.log(cand["mod_prob"])
-
-    row_ind, col_ind = linear_sum_assignment(cost_matrix)
-    optimal = {}
-    for r, c in zip(row_ind, col_ind):
-        if cost_matrix[r, c] < 1e4:
-            optimal[r + 1] = idx_to_team[c]
-        else:
-            optimal[r + 1] = ""
-    return optimal
 
 def sync_to_google_sheets():
     print("Connecting to Google Sheets...")
@@ -411,7 +413,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with calibrated parameters.")
+    print("Success: Google Sheet updated cleanly with dynamic tiered survival parameters.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
