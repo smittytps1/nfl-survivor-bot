@@ -193,10 +193,15 @@ def run_diagnostics():
         comp_data.append({"Strategy Profile": p, "Avg Weeks Survived": f"{avg_survived:.1f}/18", "Total Win Record": f"{total_wins}/90"})
     print(pd.DataFrame(comp_data).to_string(index=False))
 
+    # Write to Google Sheets with full Drive and Spreadsheet scopes
     try:
         creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
         if creds_json:
-            creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=["https://www.googleapis.com/auth/spreadsheets"])
+            scopes = [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"
+            ]
+            creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
             client = gspread.authorize(creds)
             spreadsheet = client.open(SHEET_TITLE)
             
