@@ -71,6 +71,11 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
     return min(0.96, max(0.50, round(adj_prob, 3)))
 
 def solve_season_survivor_path(weekly_slates):
+    """
+    Dynamic Chronological Forward-Solver:
+    Picks teams sequentially week-by-week. Evaluates immediate point-spread safety
+    against future value hoarding so elite teams aren't burned prematurely.
+    """
     used_teams = set()
     optimal = {}
 
@@ -92,7 +97,7 @@ def solve_season_survivor_path(weekly_slates):
                 if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 9.5
             )
 
-            # Sequential lookahead scoring: balance immediate safety with future value
+            # Sequential lookahead scoring: balances immediate safety vs future utility
             if abs(spread) >= 10.0:
                 score = 100.0 - (future_heavy_spots * 5.0)
             elif abs(spread) >= 8.0:
@@ -130,7 +135,7 @@ def get_or_create_worksheet(spreadsheet, tab_title):
 
 def run_backtest_pipeline():
     print("=" * 80)
-    print("🏈 RUNNING SEQUENTIAL LOOKAHEAD SURVIVOR BACKTESTER")
+    print("🏈 RUNNING DYNAMIC CHRONOLOGICAL FORWARD SURVIVOR BACKTESTER")
     print("=" * 80)
 
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
@@ -282,9 +287,12 @@ def run_backtest_pipeline():
                     matrix[cand_row_num - 1][7] = m_prob_display
                     matrix[cand_row_num - 1][8] = mod_prob_display
 
+        # 1. Update Grid Values
         sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
 
+        # 2. Build Single Consolidated Batch Payload
         requests_payload = []
+
         requests_payload.append({
             "unmergeCells": {
                 "range": {
