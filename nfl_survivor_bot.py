@@ -51,8 +51,6 @@ NAME_TO_ABBR = {
     "washington commanders": "WAS", "commanders": "WAS", "was": "WAS"
 }
 
-ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
-
 def team_to_abbr(name: str) -> str:
     cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', str(name)).strip().lower()
     return NAME_TO_ABBR.get(cleaned, cleaned.upper()[:3])
@@ -71,54 +69,74 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
 
 def solve_survivor_path(all_weekly_slates, locked_picks):
     """
-    Global Exact Solver using Maximum-Weight Bipartite Matching.
-    Mathematically guarantees the highest possible cumulative win probability
-    across the entire 18-week season.
+    Two-Tier Survivor Solver for 1-Strike (Weeks 1-8) + Sudden Death (Weeks 9-18):
+    1. Guarantees maximum safety for Weeks 9-18 (Sudden Death) using an exact global solver.
+    2. Fills Weeks 1-8 with the best remaining available teams.
     """
-    # 1. Collect all unique candidate teams across all weeks
-    all_teams = set()
+    used_teams = set()
+    optimal = {}
+
+    # Honor manual locks first
     for w in range(1, WEEKS + 1):
-        for c in all_weekly_slates.get(w, []):
-            all_teams.add(c["team"])
-    for team in locked_picks.values():
-        if team:
-            all_teams.add(team)
-            
-    team_list = sorted(list(all_teams))
-    team_to_idx = {team: i for i, team in enumerate(team_list)}
-    num_teams = len(team_list)
+        if w in locked_picks and locked_picks[w]:
+            optimal[w] = locked_picks[w]
+            used_teams.add(locked_picks[w])
 
-    # 2. Build cost matrix: rows = weeks (0..17), cols = teams
-    # We want to maximize sum(ln(P)), so cost = -ln(P) (minimizing negative log-prob)
-    cost_matrix = np.full((WEEKS, num_teams), 1e6)  # High penalty for invalid picks
-
-    for w in range(1, WEEKS + 1):
-        row = w - 1
-        locked_team = locked_picks.get(w)
-
-        if locked_team and locked_team in team_to_idx:
-            # Force the locked team for this week
-            col = team_to_idx[locked_team]
-            cost_matrix[row, col] = -100.0  # Dominant incentive to force match
-        else:
+    # --- PHASE 1: Solve Weeks 9-18 (Sudden Death) ---
+    late_weeks = [w for w in range(9, WEEKS + 1) if w not in optimal]
+    if late_weeks:
+        all_late_teams = set()
+        for w in late_weeks:
+            for c in all_weekly_slates.get(w, []):
+                if c["team"] not in used_teams:
+                    all_late_teams.add(c["team"])
+                    
+        late_team_list = sorted(list(all_late_teams))
+        team_to_idx = {t: i for i, t in enumerate(late_team_list)}
+        
+        cost_matrix_late = np.full((len(late_weeks), len(late_team_list)), 1e6)
+        for r, w in enumerate(late_weeks):
             for cand in all_weekly_slates.get(w, []):
                 t = cand["team"]
                 prob = cand.get("mod_prob")
-                if prob is not None and prob > 0:
-                    col = team_to_idx[t]
-                    # Minimize negative log probability
-                    cost_matrix[row, col] = -math.log(prob)
+                if t in team_to_idx and prob is not None and prob > 0:
+                    cost_matrix_late[r, team_to_idx[t]] = -math.log(prob)
+                    
+        row_ind, col_ind = linear_sum_assignment(cost_matrix_late)
+        for r, c in zip(row_ind, col_ind):
+            w = late_weeks[r]
+            if cost_matrix_late[r, c] < 1e5:
+                pick = late_team_list[c]
+                optimal[w] = pick
+                used_teams.add(pick)
 
-    # 3. Solve exact linear sum assignment
-    row_ind, col_ind = linear_sum_assignment(cost_matrix)
-
-    optimal = {}
-    for r, c in zip(row_ind, col_ind):
-        week = r + 1
-        if cost_matrix[r, c] < 1e5:  # Valid assignment found
-            optimal[week] = team_list[c]
-        else:
-            optimal[week] = ""
+    # --- PHASE 2: Solve Weeks 1-8 (1-Strike Buffer) ---
+    early_weeks = [w for w in range(1, 9) if w not in optimal]
+    if early_weeks:
+        all_early_teams = set()
+        for w in early_weeks:
+            for c in all_weekly_slates.get(w, []):
+                if c["team"] not in used_teams:
+                    all_early_teams.add(c["team"])
+                    
+        early_team_list = sorted(list(all_early_teams))
+        team_to_idx_early = {t: i for i, t in enumerate(early_team_list)}
+        
+        cost_matrix_early = np.full((len(early_weeks), len(early_team_list)), 1e6)
+        for r, w in enumerate(early_weeks):
+            for cand in all_weekly_slates.get(w, []):
+                t = cand["team"]
+                prob = cand.get("mod_prob")
+                if t in team_to_idx_early and prob is not None and prob > 0:
+                    cost_matrix_early[r, team_to_idx_early[t]] = -math.log(prob)
+                    
+        row_ind, col_ind = linear_sum_assignment(cost_matrix_early)
+        for r, c in zip(row_ind, col_ind):
+            w = early_weeks[r]
+            if cost_matrix_early[r, c] < 1e5:
+                pick = early_team_list[c]
+                optimal[w] = pick
+                used_teams.add(pick)
 
     return optimal
 
@@ -302,24 +320,30 @@ def sync_to_google_sheets():
         espn_odds = fetch_espn_live_odds(w)
         all_weekly_slates[w] = build_candidates_for_week(schedule[w], live_odds_map, espn_odds, w)
 
-    # Call the new exact global solver
+    # Call the new 1-strike global solver
     optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # Calculate actual cumulative season probability
-    cum_prob = 1.0
+    # 1. Collect weekly model win probabilities
+    weekly_probs = []
     for w in range(1, WEEKS + 1):
         effective_team = locked_picks.get(w, optimal_path.get(w, ""))
         week_cands = all_weekly_slates.get(w, [])
         matched = next((c for c in week_cands if c["team"] == effective_team and c["mod_prob"] is not None), None)
-        
-        if matched and matched["mod_prob"] is not None:
-            w_prob = matched["mod_prob"]
-        elif week_cands and week_cands[0]["mod_prob"] is not None:
-            w_prob = week_cands[0]["mod_prob"]
-        else:
-            w_prob = 0.74
-            
-        cum_prob *= w_prob
+        prob = matched["mod_prob"] if matched else (week_cands[0]["mod_prob"] if week_cands else 0.74)
+        weekly_probs.append(prob)
+
+    # 2. Probability of passing Weeks 1-8 (0 or 1 loss allowed)
+    p_early = weekly_probs[:8]
+    p_all_win = float(np.prod(p_early))
+    p_one_loss = sum((1 - p_early[j]) * float(np.prod([p_early[i] for i in range(8) if i != j])) for j in range(8))
+    prob_phase_1 = p_all_win + p_one_loss
+
+    # 3. Probability of passing Weeks 9-18 (0 losses allowed)
+    p_late = weekly_probs[8:]
+    prob_phase_2 = float(np.prod(p_late))
+
+    # Total Season Survival
+    cum_prob = prob_phase_1 * prob_phase_2
 
     headers = [
         "Week", "Recommended Pick", "|", "My Actual Pick",
@@ -438,7 +462,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with strict Sunday/Monday global exact solver.")
+    print("Success: Google Sheet updated cleanly with strict Sunday/Monday exact solver and 1-strike logic.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
