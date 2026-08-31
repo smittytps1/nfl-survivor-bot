@@ -89,22 +89,28 @@ def solve_season_survivor_path(weekly_slates):
         continue
 
       spread = cand.get("spread", 0.0)
+      is_home = cand.get("is_home", True)
+      m_prob = cand["mod_prob"]
 
-      # 1. Hard Floor: penalize sub-7.0 pt favorites in early weeks
-      if w <= 8 and spread is not None and abs(spread) < 7.0:
-        base_cost = -math.log(max(0.30, cand["mod_prob"] - 0.35)) + 50.0
-      # 2. Dominance Lock: force taking >=10.0 pt favorites in Weeks 1-6
-      elif w <= 6 and spread is not None and abs(spread) >= 10.0:
-        base_cost = -math.log(cand["mod_prob"]) * 0.01
-      # 3. Dynamic Progressive Weighting
-      elif w <= 6:
-        base_cost = -math.log(cand["mod_prob"]) * 0.30
+      # --- EXPONENTIAL SPREAD DOMINANCE ENGINE ---
+      if w <= 6:
+        # Heavily prioritizes double-digit favorites over 7.5 pt favorites
+        cost = math.exp((spread + 8.5) * 0.75)
+        if abs(spread) < 8.0:
+          cost += 4.0
+        if not is_home:
+          cost += 1.5
       elif w <= 12:
-        base_cost = -math.log(cand["mod_prob"]) * 0.70
+        cost = -math.log(m_prob) * 0.50
+        if abs(spread) < 7.0:
+          cost += 3.0
       else:
-        base_cost = -math.log(cand["mod_prob"]) * 1.00
+        cost = -math.log(m_prob) * 1.00
+        # Prevent weak week 14 trap
+        if w == 14 and abs(spread) < 8.0:
+          cost += 4.0
 
-      cost_matrix[row, t_idx] = base_cost
+      cost_matrix[row, t_idx] = cost
 
   row_ind, col_ind = linear_sum_assignment(cost_matrix)
   optimal = {}
@@ -134,7 +140,7 @@ def get_or_create_worksheet(spreadsheet, tab_title):
 
 def run_backtest_pipeline():
   print("=" * 80)
-  print("🏈 RUNNING DYNAMIC PROGRESSIVE SAFETY SURVIVOR BACKTESTER")
+  print("🏈 RUNNING EXPONENTIAL SPREAD DOMINANCE SURVIVOR BACKTESTER")
   print("=" * 80)
 
   creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
@@ -177,8 +183,12 @@ def run_backtest_pipeline():
 
       h_team = team_to_abbr(row["home_team"])
       a_team = team_to_abbr(row["away_team"])
-      h_score = int(row["home_score"]) if pd.notnull(row["home_score"]) else None
-      a_score = int(row["away_score"]) if pd.notnull(row["away_score"]) else None
+      h_score = (
+          int(row["home_score"]) if pd.notnull(row["home_score"]) else None
+      )
+      a_score = (
+          int(row["away_score"]) if pd.notnull(row["away_score"]) else None
+      )
 
       spread_val = float(row["spread_line"]) if pd.notnull(row.get("spread_line")) else 0.0
       home_spread = -spread_val
