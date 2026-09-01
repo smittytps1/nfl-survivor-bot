@@ -52,30 +52,49 @@ NAME_TO_ABBR = {
     "washington football team": "WAS", "washington": "WAS"
 }
 
+DIVISIONS = {
+    "BUF": "AFCE", "MIA": "AFCE", "NE": "AFCE", "NYJ": "AFCE",
+    "BAL": "AFCN", "CIN": "AFCN", "CLE": "AFCN", "PIT": "AFCN",
+    "HOU": "AFCS", "IND": "AFCS", "JAX": "AFCS", "TEN": "AFCS",
+    "DEN": "AFCW", "KC": "AFCW", "LV": "AFCW", "LAC": "AFCW",
+    "DAL": "NFCE", "NYG": "NFCE", "PHI": "NFCE", "WAS": "NFCE",
+    "CHI": "NFCN", "DET": "NFCN", "GB": "NFCN", "MIN": "NFCN",
+    "ATL": "NFCS", "CAR": "NFCS", "NO": "NFCS", "TB": "NFCS",
+    "ARI": "NFCW", "LAR": "NFCW", "SF": "NFCW", "SEA": "NFCW"
+}
+
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
 
 def team_to_abbr(name: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9 ]", "", str(name)).strip().lower()
     return NAME_TO_ABBR.get(cleaned, cleaned.upper()[:3])
 
+def is_divisional_road_game(team: str, opponent: str, is_home: bool) -> bool:
+    if is_home:
+        return False
+    t_div = DIVISIONS.get(team)
+    o_div = DIVISIONS.get(opponent)
+    return t_div is not None and t_div == o_div
+
 def spread_to_market_prob(spread: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
-def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
+def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int, opponent: str = "", team: str = "") -> float:
     if market_prob is None:
         return None
     early_discount = -0.035 if week <= 4 else 0.0
     home_edge = 0.010 if is_home else -0.005
+    div_road_penalty = -0.040 if (week <= 6 and is_divisional_road_game(team, opponent, is_home)) else 0.0
     heavy_fav_boost = 0.025 if abs(spread) >= 9.5 else (-0.035 if abs(spread) < 7.0 else 0.0)
-    adj_prob = market_prob + early_discount + home_edge + heavy_fav_boost
+    adj_prob = market_prob + early_discount + home_edge + div_road_penalty + heavy_fav_boost
     return min(0.96, max(0.50, round(adj_prob, 3)))
 
 def solve_season_survivor_path(weekly_slates):
     """
-    Generalized Dynamic Chronological Forward Solver:
-    - Evaluates full slates without hardcoded seasonal exceptions.
-    - Balances current weekly line strength against future portfolio option value.
-    - Protects teams with better immediate spots (upcoming 2 weeks).
+    Calibrated Chronological Forward Solver:
+    1. Hard early spread floor (Weeks 1-4).
+    2. Divisional road trap penalty (Weeks 1-6).
+    3. Asymmetric horizon weighting (scaled future-value penalty).
     """
     used_teams = set()
     optimal = {}
@@ -89,6 +108,7 @@ def solve_season_survivor_path(weekly_slates):
         scored_cands = []
         for cand in cands:
             team = cand["team"]
+            opp = cand.get("opponent", "")
             spread = abs(cand.get("spread", 0.0))
             is_home = cand.get("is_home", False)
 
@@ -109,9 +129,27 @@ def solve_season_survivor_path(weekly_slates):
 
             score = spread * 10.0
 
-            # Preserve heavy future options unless current spot is elite (>= 12.0)
+            # 1. Asymmetric Horizon Weighting
+            if w <= 6:
+                fv_weight = 4.0  # Focus on early survival
+            elif w <= 13:
+                fv_weight = 8.0
+            else:
+                fv_weight = 14.0
+
             if spread < 12.0:
-                score -= (future_heavy_spots * 12.0)
+                score -= (future_heavy_spots * fv_weight)
+
+            # 2. Hard Early Spread Floor (Weeks 1-4)
+            if w <= 4:
+                if spread < 7.0:
+                    score -= 75.0
+                elif spread < 8.5 and not is_home:
+                    score -= 50.0
+
+            # 3. Divisional Road Trap Penalty (Weeks 1-6)
+            if w <= 6 and is_divisional_road_game(team, opp, is_home):
+                score -= 40.0
 
             if better_spot_soon:
                 score -= 30.0
@@ -147,7 +185,7 @@ def get_or_create_worksheet(spreadsheet, tab_title):
 
 def run_backtest_pipeline():
     print("=" * 80)
-    print("🏈 RUNNING GENERALIZED DYNAMIC SURVIVOR BACKTESTER")
+    print("🏈 RUNNING 3-TIER CALIBRATED SURVIVOR BACKTESTER")
     print("=" * 80)
 
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
@@ -194,7 +232,7 @@ def run_backtest_pipeline():
 
             if home_spread <= 0:
                 m_prob = spread_to_market_prob(home_spread)
-                mod_prob = calculate_model_prob(m_prob, True, home_spread, w)
+                mod_prob = calculate_model_prob(m_prob, True, home_spread, w, a_team, h_team)
                 weekly_slates[w].append({
                     "team": h_team, "opponent": a_team, "matchup": f"{a_team} @ {h_team}",
                     "is_home": True, "spread": home_spread, "m_prob": m_prob, "mod_prob": mod_prob,
@@ -203,7 +241,7 @@ def run_backtest_pipeline():
             else:
                 away_spread = -home_spread
                 m_prob = spread_to_market_prob(away_spread)
-                mod_prob = calculate_model_prob(m_prob, False, away_spread, w)
+                mod_prob = calculate_model_prob(m_prob, False, away_spread, w, h_team, a_team)
                 weekly_slates[w].append({
                     "team": a_team, "opponent": h_team, "matchup": f"{a_team} @ {h_team}",
                     "is_home": False, "spread": away_spread, "m_prob": m_prob, "mod_prob": mod_prob,
@@ -274,7 +312,7 @@ def run_backtest_pipeline():
 
         for w in range(1, WEEKS + 1):
             rec_team = optimal_path.get(w, "")
-            cands = weekly_slates.get(w, [])[:5]  # Format only top 5 visually
+            cands = weekly_slates.get(w, [])[:5]
             block_start_row = 1 + (w - 1) * 6 + 1
 
             matrix[block_start_row - 1][4] = f"Top candidates for Week {w}"
