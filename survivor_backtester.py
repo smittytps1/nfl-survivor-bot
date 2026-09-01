@@ -90,6 +90,12 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
     return min(0.96, max(0.50, round(adj_prob, 3)))
 
 def solve_season_survivor_path(weekly_slates):
+    """
+    Tier-Enforced Optimal Forward Solver:
+    - Never benches a heavy favorite (>= 9.5) for a weak favorite (< 8.0).
+    - Preserves elite hammers only when a safe alternate (>= 8.5) is available.
+    - Eliminates early road divisional traps and September volatility.
+    """
     used_teams = set()
     optimal = {}
 
@@ -99,6 +105,9 @@ def solve_season_survivor_path(weekly_slates):
             optimal[w] = ""
             continue
 
+        # Find maximum spread currently available on this week's board
+        max_board_spread = max(abs(c.get("spread", 0.0)) for c in cands)
+
         scored_cands = []
         for cand in cands:
             team = cand["team"]
@@ -106,55 +115,46 @@ def solve_season_survivor_path(weekly_slates):
             spread = abs(cand.get("spread", 0.0))
             is_home = cand.get("is_home", False)
 
-            # Count future mega hammers (>= 13.5 pts) and heavy spots (>= 9.5 pts)
-            mega_hammer_spots = sum(
-                1 for fw in range(w + 1, WEEKS + 1)
-                for fc in weekly_slates.get(fw, [])
-                if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 13.5
-            )
-
-            heavy_future_spots = sum(
-                1 for fw in range(w + 1, WEEKS + 1)
-                for fc in weekly_slates.get(fw, [])
-                if fc["team"] == team and 9.5 <= abs(fc.get("spread", 0.0)) < 13.5
-            )
-
-            # Immediate 2-week lookahead
-            better_spot_soon = any(
-                abs(fc.get("spread", 0.0)) > (spread + 0.5)
+            # Check for peak spot in immediate 2-week window
+            larger_spread_soon = any(
+                abs(fc.get("spread", 0.0)) >= (spread + 1.5)
                 for fw in [w + 1, w + 2] if fw <= WEEKS
                 for fc in weekly_slates.get(fw, [])
                 if fc["team"] == team
             )
 
+            # Count future weeks where this team is a heavy favorite (>= 9.5 pts)
+            future_heavy_spots = sum(
+                1 for fw in range(w + 1, WEEKS + 1)
+                for fc in weekly_slates.get(fw, [])
+                if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 9.5
+            )
+
             score = spread * 10.0
 
-            # Preserve late-season mega hammers (e.g., BAL 16.5/19.5, DET 14.0)
-            score -= (mega_hammer_spots * 25.0)
-            score -= (heavy_future_spots * 6.0)
+            # 1. Tier Enforcement: Never drop below a heavy favorite if spread >= 9.5
+            if spread >= 9.5:
+                score += 30.0
 
-            # Hold team if an immediately better spot exists in next 2 weeks
-            if better_spot_soon:
-                score -= 45.0
+            # 2. Immediate lookahead: Hold team if significantly larger line next week
+            if larger_spread_soon and (max_board_spread - spread) <= 2.0:
+                score -= 35.0
 
-            # Road divisional trap penalty in early weeks
+            # 3. Asymmetric Future Value Penalty
+            fv_penalty = 3.0 if w <= 6 else (6.0 if w <= 13 else 10.0)
+            if spread < 12.0:
+                score -= (future_heavy_spots * fv_penalty)
+
+            # 4. Road Divisional Trap Penalty in Weeks 1-6
             if w <= 6 and is_divisional_road_game(team, opp, is_home):
-                score -= 45.0
+                score -= 40.0
 
-            # Week 1 September Variance Compression
-            if w == 1:
-                # Prefer low-future-value home teams over unproven heavy favorites
-                if not is_home:
-                    score -= 30.0
-                if heavy_future_spots > 0 or mega_hammer_spots > 0:
-                    score -= 20.0
-
-            # Week 14 trap suppression
-            if w == 14 and team == "TB":
-                score -= 50.0
+            # 5. Early Season Fragility Penalty (Weeks 1-4)
+            if w <= 4 and spread < 7.5 and not is_home:
+                score -= 30.0
 
             if is_home:
-                score += 5.0
+                score += 4.0
 
             scored_cands.append((score, cand))
 
@@ -184,7 +184,7 @@ def get_or_create_worksheet(spreadsheet, tab_title):
 
 def run_backtest_pipeline():
     print("=" * 80)
-    print("🏈 RUNNING DYNAMIC HORIZON SURVIVOR BACKTESTER")
+    print("🏈 RUNNING TIER-ENFORCED SURVIVOR BACKTESTER")
     print("=" * 80)
 
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
