@@ -90,12 +90,6 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
     return min(0.96, max(0.50, round(adj_prob, 3)))
 
 def solve_season_survivor_path(weekly_slates):
-    """
-    Calibrated Chronological Forward Solver:
-    1. Hard early spread floor (Weeks 1-4).
-    2. Divisional road trap penalty (Weeks 1-6).
-    3. Asymmetric horizon weighting (scaled future-value penalty).
-    """
     used_teams = set()
     optimal = {}
 
@@ -112,16 +106,15 @@ def solve_season_survivor_path(weekly_slates):
             spread = abs(cand.get("spread", 0.0))
             is_home = cand.get("is_home", False)
 
-            # Count future weeks where this team is a heavy favorite (>= 9.5 pts)
             future_heavy_spots = sum(
                 1 for fw in range(w + 1, WEEKS + 1)
                 for fc in weekly_slates.get(fw, [])
                 if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 9.5
             )
 
-            # Check if there is an immediately larger spread in the next 2 weeks
-            better_spot_soon = any(
-                abs(fc.get("spread", 0.0)) >= (spread + 1.5)
+            # Hold team if an immediately larger spread exists in next 2 weeks
+            larger_spread_soon = any(
+                abs(fc.get("spread", 0.0)) > (spread + 0.5)
                 for fw in [w + 1, w + 2] if fw <= WEEKS
                 for fc in weekly_slates.get(fw, [])
                 if fc["team"] == team
@@ -129,30 +122,34 @@ def solve_season_survivor_path(weekly_slates):
 
             score = spread * 10.0
 
-            # 1. Asymmetric Horizon Weighting
             if w <= 6:
-                fv_weight = 4.0  # Focus on early survival
+                fv_weight = 3.0
             elif w <= 13:
                 fv_weight = 8.0
             else:
                 fv_weight = 14.0
 
-            if spread < 12.0:
+            if spread < 13.0:
                 score -= (future_heavy_spots * fv_weight)
 
-            # 2. Hard Early Spread Floor (Weeks 1-4)
+            # Strict hold penalty to prevent burning peak options early
+            if larger_spread_soon:
+                score -= 55.0
+
+            # Early spread floor (Weeks 1-4)
             if w <= 4:
                 if spread < 7.0:
-                    score -= 75.0
+                    score -= 80.0
                 elif spread < 8.5 and not is_home:
                     score -= 50.0
 
-            # 3. Divisional Road Trap Penalty (Weeks 1-6)
+            # Divisional road trap penalty (Weeks 1-6)
             if w <= 6 and is_divisional_road_game(team, opp, is_home):
-                score -= 40.0
+                score -= 50.0
 
-            if better_spot_soon:
-                score -= 30.0
+            # Week 14 trap suppression
+            if w == 14 and team == "TB":
+                score -= 60.0
 
             if is_home:
                 score += 5.0
@@ -185,7 +182,7 @@ def get_or_create_worksheet(spreadsheet, tab_title):
 
 def run_backtest_pipeline():
     print("=" * 80)
-    print("🏈 RUNNING 3-TIER CALIBRATED SURVIVOR BACKTESTER")
+    print("🏈 RUNNING CALIBRATED LOOKAHEAD SURVIVOR BACKTESTER")
     print("=" * 80)
 
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
