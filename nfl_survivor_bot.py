@@ -89,11 +89,10 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
 
 def solve_survivor_path(all_weekly_slates, locked_picks):
     """
-    Calibrated Chronological Forward Solver for Active Season:
-    1. Hard early spread floor (Weeks 1-4).
-    2. Divisional road trap penalty (Weeks 1-6).
-    3. Asymmetric horizon weighting (scaled future-value penalty).
-    4. Honors user locked picks in 'My Actual Pick' column.
+    Pure Generalized Forward-Lookahead Solver for Active 2026 Season:
+    - Honors user locked picks in 'My Actual Pick' column.
+    - Evaluates candidates purely on market spread, future opportunity cost, and divisional context.
+    - Contains zero team-specific hardcoded exceptions.
     """
     used_teams = set()
     optimal = {}
@@ -134,7 +133,7 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
 
             score = spread * 10.0
 
-            # 1. Asymmetric Horizon Weighting
+            # 1. Scaled Future Opportunity Cost
             if w <= 6:
                 fv_weight = 4.0
             elif w <= 13:
@@ -145,22 +144,23 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
             if spread < 12.0:
                 score -= (future_heavy_spots * fv_weight)
 
-            # 2. Hard Early Spread Floor (Weeks 1-4)
-            if w <= 4:
-                if spread < 7.0:
-                    score -= 75.0
-                elif spread < 8.5 and not is_home:
-                    score -= 50.0
-
-            # 3. Divisional Road Trap Penalty (Weeks 1-6)
-            if w <= 6 and is_divisional_road_game(team, opp, is_home):
-                score -= 40.0
-
+            # 2. Immediate Window Lookahead Hold
             if better_spot_soon:
                 score -= 30.0
 
+            # 3. Early Season Road Divisional Penalty (Weeks 1-6)
+            if w <= 6 and is_divisional_road_game(team, opp, is_home):
+                score -= 40.0
+
+            # 4. September Spread Floor (Weeks 1-4)
+            if w <= 4:
+                if spread < 7.0:
+                    score -= 50.0
+                elif spread < 8.5 and not is_home:
+                    score -= 35.0
+
             if is_home:
-                score += 5.0
+                score += 4.0
 
             scored_cands.append((score, cand))
 
@@ -461,7 +461,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with 3-tier calibrated survivor model.")
+    print("Success: Google Sheet updated cleanly with pure generalized survivor model.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
