@@ -72,10 +72,10 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
 
 def solve_season_survivor_path(weekly_slates):
     """
-    Chronological Absolute-Safety Solver:
-    - Never passes up double-digit home favorites (>= -12.0) in Weeks 1-3.
-    - In Week 4, saves DET for Week 5 by taking HOU.
-    - Locks elite lines in Weeks 8 (IND), 13 (LAC), and 14 (DEN).
+    Generalized Dynamic Chronological Forward Solver:
+    - Evaluates full slates without hardcoded seasonal exceptions.
+    - Balances current weekly line strength against future portfolio option value.
+    - Protects teams with better immediate spots (upcoming 2 weeks).
     """
     used_teams = set()
     optimal = {}
@@ -90,32 +90,34 @@ def solve_season_survivor_path(weekly_slates):
         for cand in cands:
             team = cand["team"]
             spread = abs(cand.get("spread", 0.0))
+            is_home = cand.get("is_home", False)
+
+            # Count future weeks where this team is a heavy favorite (>= 9.5 pts)
+            future_heavy_spots = sum(
+                1 for fw in range(w + 1, WEEKS + 1)
+                for fc in weekly_slates.get(fw, [])
+                if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 9.5
+            )
+
+            # Check if there is an immediately larger spread in the next 2 weeks
+            better_spot_soon = any(
+                abs(fc.get("spread", 0.0)) >= (spread + 1.5)
+                for fw in [w + 1, w + 2] if fw <= WEEKS
+                for fc in weekly_slates.get(fw, [])
+                if fc["team"] == team
+            )
 
             score = spread * 10.0
 
-            # 1. Week 3 Priority: Lock heavy favorites (e.g. BUF -12.5, avoid GB trap)
-            if w == 3 and spread >= 12.0:
-                score += 50.0
+            # Preserve heavy future options unless current spot is elite (>= 12.0)
+            if spread < 12.0:
+                score -= (future_heavy_spots * 12.0)
 
-            # 2. Week 4 Protection: If DET has a bigger matchup in W5 (DET @ CIN -10.5), hold DET for W5
-            if w == 4 and team == "DET":
-                score -= 40.0
+            if better_spot_soon:
+                score -= 30.0
 
-            # 3. Early Weeks Safety (Weeks 1-6): Heavily penalize sub-8pt favorites
-            if w <= 6 and spread < 8.0:
-                score -= 60.0
-
-            # 4. Week 8: Force double-digit favorite (takes IND -15.5, avoids ATL trap)
-            if w == 8 and spread >= 12.0:
-                score += 50.0
-
-            # 5. Week 13: Avoid high-variance road traps, take LAC
-            if w == 13 and team == "LAC":
-                score += 30.0
-
-            # 6. Week 14: Avoid TB trap, take DEN
-            if w == 14 and team == "TB":
-                score -= 60.0
+            if is_home:
+                score += 5.0
 
             scored_cands.append((score, cand))
 
@@ -145,7 +147,7 @@ def get_or_create_worksheet(spreadsheet, tab_title):
 
 def run_backtest_pipeline():
     print("=" * 80)
-    print("🏈 RUNNING VERIFIED NFL SURVIVOR BACKTESTER")
+    print("🏈 RUNNING GENERALIZED DYNAMIC SURVIVOR BACKTESTER")
     print("=" * 80)
 
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
@@ -272,7 +274,7 @@ def run_backtest_pipeline():
 
         for w in range(1, WEEKS + 1):
             rec_team = optimal_path.get(w, "")
-            cands = weekly_slates.get(w, [])
+            cands = weekly_slates.get(w, [])[:5]  # Format only top 5 visually
             block_start_row = 1 + (w - 1) * 6 + 1
 
             matrix[block_start_row - 1][4] = f"Top candidates for Week {w}"
