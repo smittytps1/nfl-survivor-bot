@@ -50,30 +50,50 @@ NAME_TO_ABBR = {
     "washington commanders": "WAS", "commanders": "WAS", "was": "WAS"
 }
 
+DIVISIONS = {
+    "BUF": "AFCE", "MIA": "AFCE", "NE": "AFCE", "NYJ": "AFCE",
+    "BAL": "AFCN", "CIN": "AFCN", "CLE": "AFCN", "PIT": "AFCN",
+    "HOU": "AFCS", "IND": "AFCS", "JAX": "AFCS", "TEN": "AFCS",
+    "DEN": "AFCW", "KC": "AFCW", "LV": "AFCW", "LAC": "AFCW",
+    "DAL": "NFCE", "NYG": "NFCE", "PHI": "NFCE", "WAS": "NFCE",
+    "CHI": "NFCN", "DET": "NFCN", "GB": "NFCN", "MIN": "NFCN",
+    "ATL": "NFCS", "CAR": "NFCS", "NO": "NFCS", "TB": "NFCS",
+    "ARI": "NFCW", "LAR": "NFCW", "SF": "NFCW", "SEA": "NFCW"
+}
+
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
 
 def team_to_abbr(name: str) -> str:
     cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', str(name)).strip().lower()
     return NAME_TO_ABBR.get(cleaned, cleaned.upper()[:3])
 
+def is_divisional_road_game(team: str, opponent: str, is_home: bool) -> bool:
+    if is_home:
+        return False
+    t_div = DIVISIONS.get(team)
+    o_div = DIVISIONS.get(opponent)
+    return t_div is not None and t_div == o_div
+
 def spread_to_market_prob(spread: float) -> float:
     return 1.0 / (1.0 + math.pow(10.0, spread / 14.5))
 
-def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int) -> float:
+def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week: int, opponent: str = "", team: str = "") -> float:
     if market_prob is None:
         return None
     early_discount = -0.035 if week <= 4 else 0.0
     home_edge = 0.010 if is_home else -0.005
+    div_road_penalty = -0.040 if (week <= 6 and is_divisional_road_game(team, opponent, is_home)) else 0.0
     heavy_fav_boost = 0.025 if abs(spread) >= 9.5 else (-0.035 if abs(spread) < 7.0 else 0.0)
-    adj_prob = market_prob + early_discount + home_edge + heavy_fav_boost
+    adj_prob = market_prob + early_discount + home_edge + div_road_penalty + heavy_fav_boost
     return min(0.96, max(0.50, round(adj_prob, 3)))
 
 def solve_survivor_path(all_weekly_slates, locked_picks):
     """
-    Generalized Dynamic Chronological Forward Solver:
-    - Solves across the FULL slate (no missing picks).
-    - Balances current spread safety against future portfolio value.
-    - Honors user locked picks in 'My Actual Pick' column.
+    Calibrated Chronological Forward Solver for Active Season:
+    1. Hard early spread floor (Weeks 1-4).
+    2. Divisional road trap penalty (Weeks 1-6).
+    3. Asymmetric horizon weighting (scaled future-value penalty).
+    4. Honors user locked picks in 'My Actual Pick' column.
     """
     used_teams = set()
     optimal = {}
@@ -95,17 +115,16 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
         scored_cands = []
         for cand in cands:
             team = cand["team"]
+            opp = cand.get("opponent", "")
             spread = abs(cand.get("spread", 0.0))
             is_home = cand.get("home", False)
 
-            # Count future weeks where this team is a heavy favorite (>= 9.5 pts)
             future_heavy_spots = sum(
                 1 for fw in range(w + 1, WEEKS + 1)
                 for fc in all_weekly_slates.get(fw, [])
                 if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 9.5
             )
 
-            # Check if there is an immediately larger spread in the next 2 weeks
             better_spot_soon = any(
                 abs(fc.get("spread", 0.0)) >= (spread + 1.5)
                 for fw in [w + 1, w + 2] if fw <= WEEKS
@@ -115,9 +134,27 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
 
             score = spread * 10.0
 
-            # Preserve heavy future options unless current spot is elite (>= 12.0)
+            # 1. Asymmetric Horizon Weighting
+            if w <= 6:
+                fv_weight = 4.0
+            elif w <= 13:
+                fv_weight = 8.0
+            else:
+                fv_weight = 14.0
+
             if spread < 12.0:
-                score -= (future_heavy_spots * 12.0)
+                score -= (future_heavy_spots * fv_weight)
+
+            # 2. Hard Early Spread Floor (Weeks 1-4)
+            if w <= 4:
+                if spread < 7.0:
+                    score -= 75.0
+                elif spread < 8.5 and not is_home:
+                    score -= 50.0
+
+            # 3. Divisional Road Trap Penalty (Weeks 1-6)
+            if w <= 6 and is_divisional_road_game(team, opp, is_home):
+                score -= 40.0
 
             if better_spot_soon:
                 score -= 30.0
@@ -242,7 +279,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
         if spread_val is not None:
             if spread_val <= 0:
                 m_prob = spread_to_market_prob(spread_val)
-                mod_prob = calculate_model_prob(m_prob, True, spread_val, week)
+                mod_prob = calculate_model_prob(m_prob, True, spread_val, week, a, h)
                 candidates.append({
                     "team": h, "opponent": a, "matchup": f"{a} @ {h}",
                     "spread": spread_val, "m_prob": m_prob, "mod_prob": mod_prob, "home": True
@@ -250,7 +287,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
             else:
                 away_spread = -spread_val
                 m_prob = spread_to_market_prob(away_spread)
-                mod_prob = calculate_model_prob(m_prob, False, away_spread, week)
+                mod_prob = calculate_model_prob(m_prob, False, away_spread, week, h, a)
                 candidates.append({
                     "team": a, "opponent": h, "matchup": f"{a} @ {h}",
                     "spread": away_spread, "m_prob": m_prob, "mod_prob": mod_prob, "home": False
@@ -351,7 +388,7 @@ def sync_to_google_sheets():
 
     for w in range(1, WEEKS + 1):
         rec_team = optimal_path.get(w, "")
-        cands = all_weekly_slates.get(w, [])[:5]  # Format only top 5 in UI
+        cands = all_weekly_slates.get(w, [])[:5]
         block_start_row = 1 + (w - 1) * 6 + 1
 
         matrix[block_start_row - 1][4] = f"Top candidates for Week {w}"
@@ -424,7 +461,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with dynamic forward-lookahead survivor model.")
+    print("Success: Google Sheet updated cleanly with 3-tier calibrated survivor model.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
