@@ -70,8 +70,10 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
 
 def solve_survivor_path(all_weekly_slates, locked_picks):
     """
-    Chronological Absolute-Safety Solver for Active Season:
-    Honors user locked picks while maximizing weekly spread safety.
+    Generalized Dynamic Chronological Forward Solver:
+    - Solves across the FULL slate (no missing picks).
+    - Balances current spread safety against future portfolio value.
+    - Honors user locked picks in 'My Actual Pick' column.
     """
     used_teams = set()
     optimal = {}
@@ -94,26 +96,34 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
         for cand in cands:
             team = cand["team"]
             spread = abs(cand.get("spread", 0.0))
+            is_home = cand.get("home", False)
+
+            # Count future weeks where this team is a heavy favorite (>= 9.5 pts)
+            future_heavy_spots = sum(
+                1 for fw in range(w + 1, WEEKS + 1)
+                for fc in all_weekly_slates.get(fw, [])
+                if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 9.5
+            )
+
+            # Check if there is an immediately larger spread in the next 2 weeks
+            better_spot_soon = any(
+                abs(fc.get("spread", 0.0)) >= (spread + 1.5)
+                for fw in [w + 1, w + 2] if fw <= WEEKS
+                for fc in all_weekly_slates.get(fw, [])
+                if fc["team"] == team
+            )
 
             score = spread * 10.0
 
-            if w == 3 and spread >= 12.0:
-                score += 50.0
+            # Preserve heavy future options unless current spot is elite (>= 12.0)
+            if spread < 12.0:
+                score -= (future_heavy_spots * 12.0)
 
-            if w == 4 and team == "DET":
-                score -= 40.0
+            if better_spot_soon:
+                score -= 30.0
 
-            if w <= 6 and spread < 8.0:
-                score -= 60.0
-
-            if w == 8 and spread >= 12.0:
-                score += 50.0
-
-            if w == 13 and team == "LAC":
-                score += 30.0
-
-            if w == 14 and team == "TB":
-                score -= 60.0
+            if is_home:
+                score += 5.0
 
             scored_cands.append((score, cand))
 
@@ -252,7 +262,7 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
             })
 
     candidates.sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0), reverse=True)
-    return candidates[:5]
+    return candidates
 
 def sync_to_google_sheets():
     print("Connecting to Google Sheets...")
@@ -341,7 +351,7 @@ def sync_to_google_sheets():
 
     for w in range(1, WEEKS + 1):
         rec_team = optimal_path.get(w, "")
-        cands = all_weekly_slates.get(w, [])
+        cands = all_weekly_slates.get(w, [])[:5]  # Format only top 5 in UI
         block_start_row = 1 + (w - 1) * 6 + 1
 
         matrix[block_start_row - 1][4] = f"Top candidates for Week {w}"
@@ -414,7 +424,7 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with absolute-safety survivor model.")
+    print("Success: Google Sheet updated cleanly with dynamic forward-lookahead survivor model.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
