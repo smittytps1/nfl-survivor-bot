@@ -1,3 +1,4 @@
+from datetime import datetime
 import io
 import json
 import math
@@ -12,6 +13,7 @@ import requests
 # --- SPREADSHEET CONFIGURATION ---
 SHEET_TITLE = "NFL Picks"
 TAB_NAME = "2026"
+LOG_TAB_NAME = "Adjustment Log"
 WEEKS = 18
 SEASON_YEAR = 2026
 
@@ -88,12 +90,6 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
     return min(0.96, max(0.50, round(adj_prob, 3)))
 
 def solve_survivor_path(all_weekly_slates, locked_picks):
-    """
-    Pure Generalized Forward-Lookahead Solver for Active 2026 Season:
-    - Honors user locked picks in 'My Actual Pick' column.
-    - Evaluates candidates purely on market spread, future opportunity cost, and divisional context.
-    - Contains zero team-specific hardcoded exceptions.
-    """
     used_teams = set()
     optimal = {}
 
@@ -133,7 +129,6 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
 
             score = spread * 10.0
 
-            # 1. Scaled Future Opportunity Cost
             if w <= 6:
                 fv_weight = 4.0
             elif w <= 13:
@@ -144,15 +139,12 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
             if spread < 12.0:
                 score -= (future_heavy_spots * fv_weight)
 
-            # 2. Immediate Window Lookahead Hold
             if better_spot_soon:
                 score -= 30.0
 
-            # 3. Early Season Road Divisional Penalty (Weeks 1-6)
             if w <= 6 and is_divisional_road_game(team, opp, is_home):
                 score -= 40.0
 
-            # 4. September Spread Floor (Weeks 1-4)
             if w <= 4:
                 if spread < 7.0:
                     score -= 50.0
@@ -301,6 +293,56 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
     candidates.sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0), reverse=True)
     return candidates
 
+def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previous_actuals, current_actuals, prev_prob, new_prob):
+    """
+    Creates or updates an 'Adjustment Log' tab that tracks every single shift
+    in recommendations caused by locked picks or line changes.
+    """
+    try:
+        log_sheet = spreadsheet.worksheet(LOG_TAB_NAME)
+    except gspread.WorksheetNotFound:
+        log_sheet = spreadsheet.add_worksheet(title=LOG_TAB_NAME, rows=300, cols=7)
+        headers = [
+            "Timestamp (UTC)", "Trigger Event", "Week", "Old Recommendation", 
+            "New Recommendation", "Model Survival Shift", "Notes"
+        ]
+        log_sheet.update(range_name="A1:G1", values=[headers])
+        log_sheet.format("A1:G1", {
+            "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+            "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+            "horizontalAlignment": "CENTER"
+        })
+
+    # Identify user lock triggers
+    newly_locked = []
+    for w in range(1, WEEKS + 1):
+        prev_act = previous_actuals.get(w, "")
+        curr_act = current_actuals.get(w, "")
+        if curr_act and curr_act != prev_act:
+            newly_locked.append(f"Wk {w}: Locked {curr_act}")
+
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Automated Odds/Line Update"
+
+    log_rows = []
+    timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
+
+    for w in range(1, WEEKS + 1):
+        old_rec = previous_picks.get(w, "")
+        new_rec = current_picks.get(w, "")
+
+        if old_rec and new_rec and old_rec != new_rec:
+            reason = "Rerouted due to User Pick" if newly_locked else "Line movement / EV shift"
+            log_rows.append([
+                timestamp_str, trigger_description, f"Week {w}", old_rec, new_rec, survival_shift_str, reason
+            ])
+
+    if log_rows:
+        log_sheet.append_rows(log_rows, value_input_option="USER_ENTERED")
+        print(f"Logged {len(log_rows)} schedule adjustments to '{LOG_TAB_NAME}'.")
+    else:
+        print("No recommendations changed; audit log remains up to date.")
+
 def sync_to_google_sheets():
     print("Connecting to Google Sheets...")
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
@@ -312,17 +354,33 @@ def sync_to_google_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
     client = gspread.authorize(creds)
-    sheet = client.open(SHEET_TITLE).worksheet(TAB_NAME)
+    spreadsheet = client.open(SHEET_TITLE)
+    sheet = spreadsheet.worksheet(TAB_NAME)
 
     existing_data = sheet.get_all_values()
     locked_picks = {}
+    previous_picks = {}
+    previous_actuals = {}
+    prev_prob = None
+
     if len(existing_data) > 1:
         for w in range(1, WEEKS + 1):
             row_idx = w + 1
             if row_idx <= len(existing_data):
                 row = existing_data[row_idx - 1]
-                if len(row) >= 4 and row[3].strip() != "":
+                if len(row) >= 2 and row[1].strip():
+                    previous_picks[w] = row[1].strip().upper()
+                if len(row) >= 4 and row[3].strip():
                     locked_picks[w] = row[3].strip().upper()
+                    previous_actuals[w] = row[3].strip().upper()
+        
+        # Read old probability if present
+        if len(existing_data) >= 20 and len(existing_data[19]) >= 2:
+            prob_raw = existing_data[19][1].replace("%", "").strip()
+            try:
+                prev_prob = float(prob_raw)
+            except ValueError:
+                pass
 
     print(f"Detected {len(locked_picks)} user locked picks: {locked_picks}")
 
@@ -364,6 +422,8 @@ def sync_to_google_sheets():
             
         cum_prob *= w_prob
 
+    new_prob = cum_prob * 100.0
+
     headers = [
         "Week", "Recommended Pick", "|", "My Actual Pick",
         "Candidate Team", "Matchup", "Line", "Market Win %", "Model Win %"
@@ -381,7 +441,7 @@ def sync_to_google_sheets():
         matrix[r_idx][3] = locked_picks.get(w, "")
 
     matrix[19][0] = "🏆 Season Survival"
-    matrix[19][1] = f"{cum_prob * 100:.2f}%"
+    matrix[19][1] = f"{new_prob:.2f}%"
 
     yellow_rows = []
     merge_ranges = []
@@ -461,7 +521,12 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    print("Success: Google Sheet updated cleanly with pure generalized survivor model.")
+    # Log adjustments to the new audit tab
+    log_adjustments_to_sheet(
+        spreadsheet, previous_picks, optimal_path, previous_actuals, locked_picks, prev_prob, new_prob
+    )
+
+    print("Success: Google Sheet updated cleanly with dynamic adjustments and audit logging.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
