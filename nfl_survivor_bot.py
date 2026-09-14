@@ -67,7 +67,6 @@ DIVISIONS = {
 
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
 
-# BASELINE FULL-SEASON CANDIDATE SLATES WITH LINES FROM START OF SEASON
 BASELINE_SEASON_SLATES = {
     1: [
         {"team": "LAC", "opponent": "ARI", "matchup": "ARI @ LAC", "spread": -10.5, "is_home": True},
@@ -232,38 +231,138 @@ def get_safe_abs_spread(cand_dict) -> float:
     sp = cand_dict.get("spread")
     return abs(sp) if sp is not None else 0.0
 
-def build_full_season_slates():
+def fetch_online_sportsbook_odds(api_key: str):
+    if not api_key:
+        return {}
+    url = f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/?apiKey={api_key}&regions=us&markets=spreads&oddsFormat=american"
+    odds_map = {}
+    try:
+        res = requests.get(url, timeout=12)
+        if res.status_code == 200:
+            data = res.json()
+            for game in data:
+                h_abbr = team_to_abbr(game.get("home_team", ""))
+                a_abbr = team_to_abbr(game.get("away_team", ""))
+                best_spread = None
+
+                for bm in game.get("bookmakers", []):
+                    for mkt in bm.get("markets", []):
+                        if mkt.get("key") == "spreads":
+                            for out in mkt.get("outcomes", []):
+                                if team_to_abbr(out.get("name")) == h_abbr:
+                                    pt = float(out.get("point", 0.0))
+                                    if best_spread is None or abs(pt) > abs(best_spread):
+                                        best_spread = pt
+                
+                if best_spread is not None:
+                    odds_map[(h_abbr, a_abbr)] = best_spread
+    except Exception as e:
+        print(f"Notice during live Odds API query: {e}")
+    return odds_map
+
+def fetch_espn_live_odds(week: int):
+    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week={week}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    espn_odds = {}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            events = res.json().get("events", [])
+            for ev in events:
+                comp = ev.get("competitions", [{}])[0]
+                competitors = comp.get("competitors", [])
+                if len(competitors) < 2:
+                    continue
+                home = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
+                away = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
+                h_abbr = team_to_abbr(home.get("team", {}).get("abbreviation", ""))
+                a_abbr = team_to_abbr(away.get("team", {}).get("abbreviation", ""))
+
+                odds_arr = comp.get("odds", [])
+                if odds_arr and "spread" in odds_arr[0]:
+                    espn_odds[(h_abbr, a_abbr)] = float(odds_arr[0]["spread"])
+    except Exception:
+        pass
+    return espn_odds
+
+def read_existing_lines_from_sheet(sheet_data):
     """
-    Constructs all 18 weekly slates, populating market and model probabilities
-    directly from baseline season lines.
+    Parses Column E (Team), Column F (Matchup), and Column G (Line) from the existing
+    sheet data so that prior verified spreads are never lost when live APIs lack data.
     """
-    slates = {}
+    existing_lines = {}
+    if not sheet_data or len(sheet_data) < 2:
+        return existing_lines
+
+    for row in sheet_data[1:]:
+        if len(row) >= 7:
+            team_raw = row[4].replace("*", "").strip()
+            team_abbr = team_to_abbr(team_raw)
+            line_str = row[6].strip()
+
+            try:
+                line_val = float(line_str)
+                if team_abbr and line_val != 0.0:
+                    existing_lines[team_abbr] = line_val
+            except ValueError:
+                pass
+    return existing_lines
+
+def build_slates_with_persistent_fallback(live_odds_map, sheet_existing_lines):
+    """
+    1. Check live online bookmaker odds.
+    2. Fallback to the existing line recorded on the spreadsheet.
+    3. Fallback to baseline opening season line.
+    Only overwrites if a new valid line is found.
+    """
+    all_slates = {}
     for w in range(1, WEEKS + 1):
-        slates[w] = []
-        cands = BASELINE_SEASON_SLATES.get(w, [])
-        for c in cands:
-            sp = c["spread"]
-            m_prob = spread_to_market_prob(sp)
-            mod_prob = calculate_model_prob(m_prob, c["is_home"], sp, w, c["opponent"], c["team"])
-            slates[w].append({
-                "team": c["team"],
-                "opponent": c["opponent"],
-                "matchup": c["matchup"],
-                "spread": sp,
-                "is_home": c["is_home"],
+        espn_odds = fetch_espn_live_odds(w)
+        all_slates[w] = []
+
+        baseline_games = BASELINE_SEASON_SLATES.get(w, [])
+        for game in baseline_games:
+            team = game["team"]
+            opp = game["opponent"]
+            is_home = game["is_home"]
+            h = team if is_home else opp
+            a = opp if is_home else team
+
+            chosen_spread = None
+
+            # Priority 1: Check Live Online Odds
+            if (h, a) in live_odds_map:
+                h_spread = live_odds_map[(h, a)]
+                chosen_spread = h_spread if is_home else -h_spread
+            elif (h, a) in espn_odds:
+                h_spread = espn_odds[(h, a)]
+                chosen_spread = h_spread if is_home else -h_spread
+
+            # Priority 2: Retain the Existing Line Recorded on the Sheet
+            if chosen_spread is None and team in sheet_existing_lines:
+                chosen_spread = sheet_existing_lines[team]
+
+            # Priority 3: Fall back to Baseline Opening Season Line
+            if chosen_spread is None:
+                chosen_spread = game["spread"]
+
+            m_prob = spread_to_market_prob(chosen_spread)
+            mod_prob = calculate_model_prob(m_prob, is_home, chosen_spread, w, opp, team)
+
+            all_slates[w].append({
+                "team": team,
+                "opponent": opp,
+                "matchup": game["matchup"],
+                "spread": chosen_spread,
+                "is_home": is_home,
                 "m_prob": m_prob,
-                "mod_prob": mod_prob,
+                "mod_prob": mod_prob
             })
-        slates[w].sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"]), reverse=True)
-    return slates
+
+        all_slates[w].sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"]), reverse=True)
+    return all_slates
 
 def solve_survivor_path(all_weekly_slates, locked_picks):
-    """
-    22-Pick Survivor Solver:
-    - Weeks 1-14: 1 pick each
-    - Weeks 15-18: 2 picks each (DOUBLE PICK WEEKS)
-    - 22 distinct teams total
-    """
     used_teams = set()
     optimal = {w: [] for w in range(1, WEEKS + 1)}
 
@@ -365,7 +464,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         if curr_act and curr_act != prev_act:
             newly_locked.append(f"Wk {w}: Locked {curr_act}")
 
-    trigger_description = "; ".join(newly_locked) if newly_locked else "Schedule/Line Re-optimization"
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Live Odds Search / Persistent Sync"
     log_rows = []
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
@@ -375,7 +474,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         new_rec = current_picks.get(w, "")
 
         if old_rec and new_rec and old_rec != new_rec:
-            reason = "Rerouted due to User Locked Pick" if newly_locked else "Double-pick portfolio rebalancing"
+            reason = "Rerouted due to User Pick" if newly_locked else "Line movement / EV shift"
             log_rows.append([
                 timestamp_str, trigger_description, f"Week {w}", old_rec, new_rec, survival_shift_str, reason
             ])
@@ -389,6 +488,8 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
 def sync_to_google_sheets():
     print("Connecting to Google Sheets...")
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
+    odds_api_key = os.environ.get("ODDS_API_KEY", "")
+
     if not creds_json:
         raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable missing.")
 
@@ -398,6 +499,7 @@ def sync_to_google_sheets():
     spreadsheet = client.open(SHEET_TITLE)
     sheet = spreadsheet.worksheet(TAB_NAME)
 
+    # 1. READ EXISTING DATA PRIOR TO ANY MODIFICATIONS
     existing_data = sheet.get_all_values()
     locked_picks = {}
     previous_picks = {}
@@ -415,7 +517,7 @@ def sync_to_google_sheets():
                     cell_val = row[3].strip()
                     locked_picks[w] = parse_actual_picks(cell_val)
                     previous_actuals[w] = cell_val
-        
+
         if len(existing_data) >= 20 and len(existing_data[19]) >= 2:
             prob_raw = existing_data[19][1].replace("%", "").strip()
             try:
@@ -423,12 +525,22 @@ def sync_to_google_sheets():
             except ValueError:
                 pass
 
+    # Extract all currently recorded lines to serve as persistent fallback
+    sheet_existing_lines = read_existing_lines_from_sheet(existing_data)
+    print(f"Preserved {len(sheet_existing_lines)} existing game lines from spreadsheet.")
     print(f"Detected user locked picks: {locked_picks}")
 
-    all_weekly_slates = build_full_season_slates()
+    # 2. SEARCH ONLINE SOURCES FOR UPDATED ODDS
+    live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
+    print(f"Retrieved {len(live_odds_map)} updated live sportsbook lines.")
+
+    # 3. BUILD ALL 18 WEEKS (Search -> Sheet Fallback -> Baseline)
+    all_weekly_slates = build_slates_with_persistent_fallback(live_odds_map, sheet_existing_lines)
+
+    # 4. SOLVE SURVIVOR SCHEDULE (22 Teams, Weeks 15-18 Double Picks)
     optimal_picks_by_week, optimal_display = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # Calculate joint cumulative win probability across all 22 picks
+    # 5. COMPUTE CUMULATIVE SURVIVAL PROBABILITY
     cum_prob = 1.0
     for w in range(1, WEEKS + 1):
         chosen_teams = locked_picks.get(w, []) if locked_picks.get(w) else optimal_picks_by_week.get(w, [])
@@ -449,6 +561,7 @@ def sync_to_google_sheets():
 
     new_prob = cum_prob * 100.0
 
+    # 6. WRITE CLEAN UPDATED MATRIX TO GOOGLE SHEETS
     sheet.clear()
     total_grid_rows = 1 + (WEEKS * 6)
 
@@ -565,7 +678,7 @@ def sync_to_google_sheets():
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
 
-    print("Success: Google Sheet updated cleanly with baseline season lines, 22-pick path, and audit log.")
+    print("Success: Google Sheet updated cleanly with search-first persistent line hierarchy.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
