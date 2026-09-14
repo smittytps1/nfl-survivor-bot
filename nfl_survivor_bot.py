@@ -15,6 +15,7 @@ from google.oauth2.service_account import Credentials
 SHEET_TITLE = "NFL Picks"
 TAB_NAME = "2026"
 LOG_TAB_NAME = "Adjustment Log"
+LINES_TAB_NAME = "Full Season Lines"
 WEEKS = 18
 SEASON_YEAR = 2026
 DOUBLE_PICK_WEEKS = {15, 16, 17, 18}
@@ -104,13 +105,12 @@ def get_safe_abs_spread(cand_dict) -> float:
 
 def fetch_nflverse_schedule():
     """
-    Fetches the genuine 2026 NFL regular season schedule from nflverse,
-    which reliably contains all 18 weeks and opening lookahead lines.
+    Fetches the 2026 NFL regular season schedule from nflverse.
     """
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
     schedule_by_week = {w: [] for w in range(1, WEEKS + 1)}
     
-    print("Fetching authentic 2026 NFL regular-season schedule from nflverse...")
+    print("Fetching authentic 2026 NFL schedule from nflverse...")
     try:
         res = requests.get(url, timeout=15)
         if res.status_code == 200:
@@ -125,7 +125,6 @@ def fetch_nflverse_schedule():
                     spread = None
                     if pd.notnull(row.get('spread_line')):
                         try:
-                            # nflverse typically stores the home team spread
                             spread = float(row['spread_line'])
                         except (ValueError, TypeError):
                             pass
@@ -195,61 +194,108 @@ def fetch_espn_live_odds(week: int):
         pass
     return espn_odds
 
-def read_existing_lines_from_sheet(sheet_data):
-    existing_lines = {}
-    if not sheet_data or len(sheet_data) < 2:
-        return existing_lines
-
-    for row in sheet_data[1:]:
-        if len(row) >= 7:
-            team_raw = row[4].replace("*", "").strip()
-            team_abbr = team_to_abbr(team_raw)
-            line_str = row[6].strip()
-
-            try:
-                line_val = float(line_str)
-                if team_abbr and line_val != 0.0:
-                    existing_lines[team_abbr] = line_val
-            except ValueError:
-                pass
-    return existing_lines
-
-def build_slates_for_2026(schedule_by_week, live_odds_map, sheet_existing_lines):
+def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds):
     """
-    Constructs all weekly slates strictly using the actual 2026 matchups.
-    Hierarchy:
-    1. Live Odds API
-    2. ESPN Live Odds
-    3. Sheet Persistent Recorded Line
-    4. NFLverse Lookahead Baseline
-    5. Conservative Default (-2.5 Home)
+    Creates/Reads the "Full Season Lines" tab.
+    Priority: Live Odds API -> ESPN Live -> Existing Row on Tab -> NFLverse -> Default.
+    """
+    try:
+        lines_sheet = spreadsheet.worksheet(LINES_TAB_NAME)
+        existing_data = lines_sheet.get_all_values()
+    except gspread.WorksheetNotFound:
+        lines_sheet = spreadsheet.add_worksheet(title=LINES_TAB_NAME, rows=300, cols=6)
+        existing_data = []
+
+    # Read existing manual/persistent lines
+    existing_lines = {}
+    if len(existing_data) > 1:
+        for row in existing_data[1:]:
+            if len(row) >= 5:
+                try:
+                    w = int(row[0].replace("Week ", "").strip())
+                    a = team_to_abbr(row[1])
+                    h = team_to_abbr(row[3])
+                    line = float(row[4])
+                    existing_lines[(w, h, a)] = line
+                except ValueError:
+                    pass
+
+    # Ensure schedule integrity if an API drops future games
+    for w in range(1, WEEKS + 1):
+        if not schedule_2026[w]:
+            for (ew, eh, ea), eline in existing_lines.items():
+                if ew == w:
+                    schedule_2026[w].append({
+                        "home_team": eh,
+                        "away_team": ea,
+                        "nflverse_home_spread": eline
+                    })
+
+    reconciled_schedule = {w: [] for w in range(1, WEEKS + 1)}
+    matrix = [["Week", "Away Team", "vs", "Home Team", "Home Spread", "Data Source"]]
+
+    for w in range(1, WEEKS + 1):
+        games = schedule_2026.get(w, [])
+        for g in games:
+            h = g["home_team"]
+            a = g["away_team"]
+            
+            source = ""
+            # Priority 1: Live Odds
+            if (h, a) in live_odds_map:
+                chosen_spread = live_odds_map[(h, a)]
+                source = "Live (Odds API)"
+            # Priority 2: ESPN Live
+            elif (h, a) in all_espn_odds:
+                chosen_spread = all_espn_odds[(h, a)]
+                source = "Live (ESPN)"
+            # Priority 3: User Override / Persistent Tab Data
+            elif (w, h, a) in existing_lines:
+                chosen_spread = existing_lines[(w, h, a)]
+                source = "Persistent (Lines Tab)"
+            # Priority 4: NFLverse Lookahead
+            elif g.get("nflverse_home_spread") is not None:
+                nflv_spread = float(g["nflverse_home_spread"])
+                chosen_spread = -nflv_spread if nflv_spread > 0 else nflv_spread
+                source = "Preseason (NFLverse)"
+            # Priority 5: Fallback
+            else:
+                chosen_spread = -2.5
+                source = "Default Baseline"
+
+            reconciled_schedule[w].append({
+                "home_team": h,
+                "away_team": a,
+                "line": chosen_spread
+            })
+
+            matrix.append([f"Week {w}", a, "@", h, f"{chosen_spread:+.1f}", source])
+
+    # Refresh the "Full Season Lines" tab
+    lines_sheet.clear()
+    lines_sheet.update(range_name=f"A1:F{len(matrix)}", values=matrix)
+    lines_sheet.format("A1:F1", {
+        "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+        "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
+        "horizontalAlignment": "CENTER"
+    })
+    lines_sheet.format(f"A2:F{len(matrix)}", {"horizontalAlignment": "CENTER"})
+    
+    return reconciled_schedule
+
+def build_slates_from_reconciled(reconciled_schedule):
+    """
+    Builds candidates & custom model win percentages using the verified lines tab.
     """
     all_slates = {}
     for w in range(1, WEEKS + 1):
         all_slates[w] = []
-        espn_odds = fetch_espn_live_odds(w)
-        games = schedule_by_week.get(w, [])
+        games = reconciled_schedule.get(w, [])
 
         for g in games:
             h = g["home_team"]
             a = g["away_team"]
-            home_spread = None
-
-            if (h, a) in live_odds_map:
-                home_spread = live_odds_map[(h, a)]
-            elif (h, a) in espn_odds:
-                home_spread = espn_odds[(h, a)]
-            elif h in sheet_existing_lines:
-                home_spread = sheet_existing_lines[h]
-            elif a in sheet_existing_lines:
-                home_spread = -sheet_existing_lines[a]
-            elif g.get("nflverse_home_spread") is not None:
-                home_spread = float(g["nflverse_home_spread"])
-                # Invert if nflverse stores underdog spread positively
-                if home_spread > 0:
-                    home_spread = -home_spread
-            else:
-                home_spread = -2.5
+            home_spread = g["line"]
 
             if home_spread <= 0:
                 fav_team = h
@@ -379,7 +425,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         if curr_act and curr_act != prev_act:
             newly_locked.append(f"Wk {w}: Locked {curr_act}")
 
-    trigger_description = "; ".join(newly_locked) if newly_locked else "2026 Schedule & Odds Sync"
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Lines Database & Path Sync"
     log_rows = []
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
@@ -389,7 +435,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         new_rec = current_picks.get(w, "")
 
         if old_rec and new_rec and old_rec != new_rec:
-            reason = "Rerouted due to User Pick" if newly_locked else "Double-pick schedule optimization"
+            reason = "Rerouted due to User Pick" if newly_locked else "Line movement schedule optimization"
             log_rows.append([
                 timestamp_str, trigger_description, f"Week {w}", old_rec, new_rec, survival_shift_str, reason
             ])
@@ -412,7 +458,12 @@ def sync_to_google_sheets():
     creds = Credentials.from_service_account_info(json.loads(creds_json), scopes=scopes)
     client = gspread.authorize(creds)
     spreadsheet = client.open(SHEET_TITLE)
-    sheet = spreadsheet.worksheet(TAB_NAME)
+    
+    # Check if main tab exists, if not create
+    try:
+        sheet = spreadsheet.worksheet(TAB_NAME)
+    except gspread.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title=TAB_NAME, rows=300, cols=10)
 
     existing_data = sheet.get_all_values()
     locked_picks = {}
@@ -439,23 +490,24 @@ def sync_to_google_sheets():
             except ValueError:
                 pass
 
-    sheet_existing_lines = read_existing_lines_from_sheet(existing_data)
-    print(f"Preserved {len(sheet_existing_lines)} existing verified lines.")
     print(f"Detected locked user picks: {locked_picks}")
 
-    # 1. FETCH AUTHENTIC 2026 SCHEDULE FROM NFLVERSE
+    # 1. FETCH SCHEDULE & ODDS
     schedule_2026 = fetch_nflverse_schedule()
-
-    # 2. FETCH LIVE ODDS
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
+    
+    all_espn_odds = {}
+    for w in range(1, WEEKS + 1):
+        all_espn_odds.update(fetch_espn_live_odds(w))
 
-    # 3. BUILD CANDIDATES FOR ACTUAL 2026 SCHEDULE
-    all_weekly_slates = build_slates_for_2026(schedule_2026, live_odds_map, sheet_existing_lines)
+    # 2. RECONCILE FULL SEASON LINES TAB
+    reconciled_schedule = reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds)
 
-    # 4. SOLVE OPTIMAL 22-PICK SURVIVOR SCHEDULE
+    # 3. BUILD CANDIDATES & RUN MODEL
+    all_weekly_slates = build_slates_from_reconciled(reconciled_schedule)
     optimal_picks_by_week, optimal_display = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 5. COMPUTE CUMULATIVE SURVIVAL PROBABILITY
+    # 4. COMPUTE CUMULATIVE PROBABILITY
     cum_prob = 1.0
     for w in range(1, WEEKS + 1):
         chosen_teams = locked_picks.get(w, []) if locked_picks.get(w) else optimal_picks_by_week.get(w, [])
@@ -476,7 +528,7 @@ def sync_to_google_sheets():
 
     new_prob = cum_prob * 100.0
 
-    # 6. CURATE DISPLAY: TOP 5 + ANY SELECTED TEAM OUTSIDE TOP 5
+    # 5. CURATE DISPLAY FOR MAIN TAB
     sheet_weekly_display = {}
     total_display_rows = 1
     for w in range(1, WEEKS + 1):
@@ -612,7 +664,7 @@ def sync_to_google_sheets():
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
 
-    print("Success: Google Sheet updated cleanly with authentic 2026 schedule and persistent lines.")
+    print("Success: Lines Tab verified and main sheet updated.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
