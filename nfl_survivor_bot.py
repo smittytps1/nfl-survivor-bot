@@ -113,9 +113,10 @@ def get_safe_abs_spread(cand_dict) -> float:
     sp = cand_dict.get("spread")
     return abs(sp) if sp is not None else 0.0
 
-def fetch_nflverse_schedule():
+def fetch_dynamic_schedule():
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
     schedule_by_week = {w: [] for w in range(1, WEEKS + 1)}
+    
     print("Fetching authentic 2026 NFL schedule from nflverse...")
     try:
         res = requests.get(url, timeout=15)
@@ -127,14 +128,15 @@ def fetch_nflverse_schedule():
                 if 1 <= w <= WEEKS:
                     h_abbr = team_to_abbr(row['home_team'])
                     a_abbr = team_to_abbr(row['away_team'])
-                            
+                    
                     if h_abbr in ALL_TEAMS and a_abbr in ALL_TEAMS:
                         schedule_by_week[w].append({
                             "home_team": h_abbr,
                             "away_team": a_abbr
                         })
     except Exception as e:
-        print(f"Notice on nflverse schedule fetch: {e}")
+        print(f"Notice on dynamic schedule fetch: {e}")
+        
     return schedule_by_week
 
 def fetch_online_sportsbook_odds(api_key: str):
@@ -150,6 +152,7 @@ def fetch_online_sportsbook_odds(api_key: str):
                 h_abbr = team_to_abbr(game.get("home_team", ""))
                 a_abbr = team_to_abbr(game.get("away_team", ""))
                 best_spread = None
+
                 for bm in game.get("bookmakers", []):
                     for mkt in bm.get("markets", []):
                         if mkt.get("key") == "spreads":
@@ -158,6 +161,7 @@ def fetch_online_sportsbook_odds(api_key: str):
                                     pt = float(out.get("point", 0.0))
                                     if best_spread is None or abs(pt) > abs(best_spread):
                                         best_spread = pt
+                
                 if best_spread is not None:
                     odds_map[(h_abbr, a_abbr)] = best_spread
     except Exception as e:
@@ -181,6 +185,7 @@ def fetch_espn_live_odds(week: int):
                 away = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
                 h_abbr = team_to_abbr(home.get("team", {}).get("abbreviation", ""))
                 a_abbr = team_to_abbr(away.get("team", {}).get("abbreviation", ""))
+
                 odds_arr = comp.get("odds", [])
                 if odds_arr and "spread" in odds_arr[0]:
                     espn_odds[(h_abbr, a_abbr)] = float(odds_arr[0]["spread"])
@@ -196,7 +201,6 @@ def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, al
         lines_sheet = spreadsheet.add_worksheet(title=LINES_TAB_NAME, rows=300, cols=6)
         existing_data = []
 
-    # Read the sheet to preserve any manual user edits or previously saved lines
     existing_lines = {}
     if len(existing_data) > 1:
         for row in existing_data[1:]:
@@ -211,6 +215,16 @@ def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, al
                 except ValueError:
                     pass
 
+    # If the live schedule pull dropped future weeks, reconstruct from existing sheet entries
+    for w in range(1, WEEKS + 1):
+        if not schedule_2026[w]:
+            for (ew, eh, ea), edata in existing_lines.items():
+                if ew == w:
+                    schedule_2026[w].append({
+                        "home_team": eh,
+                        "away_team": ea
+                    })
+
     reconciled_schedule = {w: [] for w in range(1, WEEKS + 1)}
     matrix = [["Week", "Away Team", "vs", "Home Team", "Home Spread", "Data Source"]]
 
@@ -220,18 +234,19 @@ def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, al
             h = g["home_team"]
             a = g["away_team"]
             
-            # Autopopulate & Update Hierarchy
+            source = ""
             if (h, a) in live_odds_map:
                 chosen_spread = live_odds_map[(h, a)]
                 source = "Live (Odds API)"
             elif (h, a) in all_espn_odds:
                 chosen_spread = all_espn_odds[(h, a)]
                 source = "Live (ESPN)"
-            elif (w, h, a) in existing_lines:
+            # Ignore the generic default if it got stuck in the sheet
+            elif (w, h, a) in existing_lines and existing_lines[(w, h, a)]["source"] not in ["Default Baseline"]:
                 chosen_spread = existing_lines[(w, h, a)]["line"]
-                source = existing_lines[(w, h, a)]["source"]
+                source = "Persistent (Lines Tab)"
             else:
-                # Dynamically Autopopulate missing future games using PR Engine
+                # Dynamic Power Rating Calculation for missing distant games
                 h_pr = POWER_RATINGS.get(h, 0.0)
                 a_pr = POWER_RATINGS.get(a, 0.0)
                 chosen_spread = round(a_pr - h_pr - 2.0, 1) # Includes standard 2.0 home field edge
@@ -242,6 +257,7 @@ def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, al
                 "away_team": a,
                 "line": chosen_spread
             })
+
             matrix.append([f"Week {w}", a, "@", h, f"{chosen_spread:+.1f}", source])
 
     lines_sheet.clear()
@@ -260,6 +276,7 @@ def build_slates_from_reconciled(reconciled_schedule):
     for w in range(1, WEEKS + 1):
         all_slates[w] = []
         games = reconciled_schedule.get(w, [])
+
         for g in games:
             h = g["home_team"]
             a = g["away_team"]
@@ -288,6 +305,7 @@ def build_slates_from_reconciled(reconciled_schedule):
                 "m_prob": m_prob,
                 "mod_prob": mod_prob
             })
+
         all_slates[w].sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"]), reverse=True)
     return all_slates
 
@@ -454,7 +472,9 @@ def sync_to_google_sheets():
             except ValueError:
                 pass
 
-    schedule_2026 = fetch_nflverse_schedule()
+    print(f"Detected locked user picks: {locked_picks}")
+
+    schedule_2026 = fetch_dynamic_schedule()
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
     
     all_espn_odds = {}
@@ -470,6 +490,7 @@ def sync_to_google_sheets():
     for w in range(1, WEEKS + 1):
         chosen_teams = locked_picks.get(w, []) if locked_picks.get(w) else optimal_picks_by_week.get(w, [])
         week_cands = all_weekly_slates.get(w, [])
+
         week_joint_prob = 1.0
         for t in chosen_teams:
             matched = next((c for c in week_cands if c["team"] == t and c["mod_prob"] is not None), None)
@@ -477,8 +498,10 @@ def sync_to_google_sheets():
                 week_joint_prob *= matched["mod_prob"]
             else:
                 week_joint_prob *= 0.74
+
         if not chosen_teams:
             week_joint_prob = 0.74
+
         cum_prob *= week_joint_prob
 
     new_prob = cum_prob * 100.0
