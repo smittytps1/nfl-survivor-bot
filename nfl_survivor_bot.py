@@ -4,7 +4,7 @@ import re
 import json
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import requests
 import pandas as pd
 import numpy as np
@@ -67,6 +67,136 @@ DIVISIONS = {
 
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
 
+# BASELINE FULL-SEASON CANDIDATE SLATES WITH LINES FROM START OF SEASON
+BASELINE_SEASON_SLATES = {
+    1: [
+        {"team": "LAC", "opponent": "ARI", "matchup": "ARI @ LAC", "spread": -10.5, "is_home": True},
+        {"team": "JAX", "opponent": "CLE", "matchup": "CLE @ JAX", "spread": -9.0, "is_home": True},
+        {"team": "DET", "opponent": "NO", "matchup": "NO @ DET", "spread": -7.0, "is_home": True},
+        {"team": "PHI", "opponent": "WAS", "matchup": "WAS @ PHI", "spread": -5.5, "is_home": True},
+        {"team": "LAR", "opponent": "SF", "matchup": "SF @ LAR", "spread": -4.0, "is_home": True},
+    ],
+    2: [
+        {"team": "SF", "opponent": "MIA", "matchup": "MIA @ SF", "spread": -10.5, "is_home": True},
+        {"team": "LAR", "opponent": "NYG", "matchup": "NYG @ LAR", "spread": -9.5, "is_home": True},
+        {"team": "SEA", "opponent": "ARI", "matchup": "SEA @ ARI", "spread": -10.0, "is_home": False},
+        {"team": "LAC", "opponent": "LV", "matchup": "LV @ LAC", "spread": -9.0, "is_home": True},
+        {"team": "BAL", "opponent": "NO", "matchup": "NO @ BAL", "spread": -7.5, "is_home": True},
+    ],
+    3: [
+        {"team": "SF", "opponent": "ARI", "matchup": "ARI @ SF", "spread": -11.5, "is_home": True},
+        {"team": "DET", "opponent": "NYJ", "matchup": "NYJ @ DET", "spread": -10.0, "is_home": True},
+        {"team": "GB", "opponent": "ATL", "matchup": "ATL @ GB", "spread": -7.5, "is_home": True},
+        {"team": "KC", "opponent": "MIA", "matchup": "KC @ MIA", "spread": -7.5, "is_home": False},
+        {"team": "NYG", "opponent": "TEN", "matchup": "TEN @ NYG", "spread": -4.0, "is_home": True},
+    ],
+    4: [
+        {"team": "BAL", "opponent": "TEN", "matchup": "TEN @ BAL", "spread": -9.0, "is_home": True},
+        {"team": "CHI", "opponent": "NYJ", "matchup": "NYJ @ CHI", "spread": -9.0, "is_home": True},
+        {"team": "MIN", "opponent": "MIA", "matchup": "MIA @ MIN", "spread": -7.5, "is_home": True},
+        {"team": "NYG", "opponent": "ARI", "matchup": "ARI @ NYG", "spread": -7.0, "is_home": True},
+        {"team": "BUF", "opponent": "NE", "matchup": "NE @ BUF", "spread": -4.0, "is_home": True},
+    ],
+    5: [
+        {"team": "NE", "opponent": "LV", "matchup": "LV @ NE", "spread": -8.5, "is_home": True},
+        {"team": "DET", "opponent": "ARI", "matchup": "DET @ ARI", "spread": -8.5, "is_home": False},
+        {"team": "CIN", "opponent": "MIA", "matchup": "CIN @ MIA", "spread": -6.5, "is_home": False},
+        {"team": "LAR", "opponent": "BUF", "matchup": "BUF @ LAR", "spread": -4.5, "is_home": True},
+        {"team": "BAL", "opponent": "ATL", "matchup": "BAL @ ATL", "spread": -4.5, "is_home": False},
+    ],
+    6: [
+        {"team": "LAR", "opponent": "ARI", "matchup": "ARI @ LAR", "spread": -14.5, "is_home": True},
+        {"team": "NE", "opponent": "NYJ", "matchup": "NYJ @ NE", "spread": -10.0, "is_home": True},
+        {"team": "PHI", "opponent": "CAR", "matchup": "CAR @ PHI", "spread": -7.0, "is_home": True},
+        {"team": "BUF", "opponent": "LV", "matchup": "BUF @ LV", "spread": -7.0, "is_home": True},
+        {"team": "BAL", "opponent": "CLE", "matchup": "BAL @ CLE", "spread": -7.0, "is_home": False},
+    ],
+    7: [
+        {"team": "LAR", "opponent": "LV", "matchup": "LAR @ LV", "spread": -8.5, "is_home": False},
+        {"team": "DEN", "opponent": "ARI", "matchup": "DEN @ ARI", "spread": -7.5, "is_home": False},
+        {"team": "HOU", "opponent": "NYG", "matchup": "NYG @ HOU", "spread": -6.0, "is_home": True},
+        {"team": "SF", "opponent": "ATL", "matchup": "SF @ ATL", "spread": -4.5, "is_home": False},
+        {"team": "BAL", "opponent": "CIN", "matchup": "CIN @ BAL", "spread": -4.0, "is_home": True},
+    ],
+    8: [
+        {"team": "DAL", "opponent": "ARI", "matchup": "ARI @ DAL", "spread": -10.5, "is_home": True},
+        {"team": "GB", "opponent": "CAR", "matchup": "CAR @ GB", "spread": -7.5, "is_home": True},
+        {"team": "CIN", "opponent": "TEN", "matchup": "TEN @ CIN", "spread": -7.0, "is_home": True},
+        {"team": "NE", "opponent": "MIA", "matchup": "NE @ MIA", "spread": -7.0, "is_home": False},
+        {"team": "PIT", "opponent": "CLE", "matchup": "CLE @ PIT", "spread": -6.0, "is_home": True},
+    ],
+    9: [
+        {"team": "SEA", "opponent": "ARI", "matchup": "ARI @ SEA", "spread": -13.5, "is_home": True},
+        {"team": "KC", "opponent": "NYJ", "matchup": "NYJ @ KC", "spread": -10.0, "is_home": True},
+        {"team": "SF", "opponent": "LV", "matchup": "LV @ SF", "spread": -9.5, "is_home": True},
+        {"team": "DET", "opponent": "MIA", "matchup": "DET @ MIA", "spread": -6.5, "is_home": False},
+        {"team": "PHI", "opponent": "NYG", "matchup": "NYG @ PHI", "spread": -6.0, "is_home": True},
+    ],
+    10: [
+        {"team": "LAR", "opponent": "ARI", "matchup": "LAR @ ARI", "spread": -10.5, "is_home": False},
+        {"team": "IND", "opponent": "MIA", "matchup": "MIA @ IND", "spread": -7.0, "is_home": True},
+        {"team": "BUF", "opponent": "NYJ", "matchup": "BUF @ NYJ", "spread": -7.0, "is_home": False},
+        {"team": "SEA", "opponent": "LV", "matchup": "SEA @ LV", "spread": -7.0, "is_home": False},
+        {"team": "GB", "opponent": "MIN", "matchup": "MIN @ GB", "spread": -4.5, "is_home": True},
+    ],
+    11: [
+        {"team": "BUF", "opponent": "MIA", "matchup": "MIA @ BUF", "spread": -12.5, "is_home": True},
+        {"team": "KC", "opponent": "ARI", "matchup": "ARI @ KC", "spread": -11.5, "is_home": True},
+        {"team": "LAC", "opponent": "NYJ", "matchup": "NYJ @ LAC", "spread": -10.5, "is_home": True},
+        {"team": "DEN", "opponent": "LV", "matchup": "LV @ DEN", "spread": -8.5, "is_home": True},
+        {"team": "DAL", "opponent": "TEN", "matchup": "TEN @ DAL", "spread": -7.0, "is_home": True},
+    ],
+    12: [
+        {"team": "CIN", "opponent": "NO", "matchup": "NO @ CIN", "spread": -6.5, "is_home": True},
+        {"team": "JAX", "opponent": "TEN", "matchup": "TEN @ JAX", "spread": -6.5, "is_home": True},
+        {"team": "LAR", "opponent": "GB", "matchup": "GB @ LAR", "spread": -5.5, "is_home": True},
+        {"team": "MIN", "opponent": "ATL", "matchup": "ATL @ MIN", "spread": -4.5, "is_home": True},
+        {"team": "TB", "opponent": "CAR", "matchup": "CAR @ TB", "spread": -4.5, "is_home": True},
+    ],
+    13: [
+        {"team": "DEN", "opponent": "MIA", "matchup": "MIA @ DEN", "spread": -9.5, "is_home": True},
+        {"team": "PHI", "opponent": "ARI", "matchup": "PHI @ ARI", "spread": -8.5, "is_home": False},
+        {"team": "LAR", "opponent": "KC", "matchup": "KC @ LAR", "spread": -5.0, "is_home": True},
+        {"team": "SEA", "opponent": "DAL", "matchup": "DAL @ SEA", "spread": -4.5, "is_home": True},
+        {"team": "CIN", "opponent": "CLE", "matchup": "CIN @ CLE", "spread": -4.5, "is_home": False},
+    ],
+    14: [
+        {"team": "DET", "opponent": "TEN", "matchup": "TEN @ DET", "spread": -7.5, "is_home": True},
+        {"team": "SEA", "opponent": "NYG", "matchup": "NYG @ SEA", "spread": -7.5, "is_home": True},
+        {"team": "BAL", "opponent": "TB", "matchup": "TB @ BAL", "spread": -6.0, "is_home": True},
+        {"team": "NE", "opponent": "MIN", "matchup": "MIN @ NE", "spread": -5.5, "is_home": True},
+        {"team": "PHI", "opponent": "IND", "matchup": "IND @ PHI", "spread": -5.5, "is_home": True},
+    ],
+    15: [
+        {"team": "GB", "opponent": "MIA", "matchup": "MIA @ GB", "spread": -10.5, "is_home": True},
+        {"team": "LAR", "opponent": "DAL", "matchup": "DAL @ LAR", "spread": -7.5, "is_home": True},
+        {"team": "NYG", "opponent": "CLE", "matchup": "CLE @ NYG", "spread": -4.5, "is_home": True},
+        {"team": "DEN", "opponent": "LV", "matchup": "DEN @ LV", "spread": -4.5, "is_home": False},
+        {"team": "BUF", "opponent": "CHI", "matchup": "CHI @ BUF", "spread": -4.0, "is_home": True},
+    ],
+    16: [
+        {"team": "BAL", "opponent": "CLE", "matchup": "CLE @ BAL", "spread": -10.5, "is_home": True},
+        {"team": "LAC", "opponent": "MIA", "matchup": "LAC @ MIA", "spread": -7.0, "is_home": False},
+        {"team": "DET", "opponent": "NYG", "matchup": "NYG @ DET", "spread": -6.5, "is_home": True},
+        {"team": "NE", "opponent": "NYJ", "matchup": "NE @ NYJ", "spread": -6.5, "is_home": False},
+        {"team": "NO", "opponent": "ARI", "matchup": "ARI @ NO", "spread": -5.5, "is_home": True},
+    ],
+    17: [
+        {"team": "BUF", "opponent": "MIA", "matchup": "BUF @ MIA", "spread": -7.5, "is_home": False},
+        {"team": "DAL", "opponent": "NYG", "matchup": "NYG @ DAL", "spread": -5.5, "is_home": True},
+        {"team": "SEA", "opponent": "CAR", "matchup": "SEA @ CAR", "spread": -5.5, "is_home": False},
+        {"team": "LAR", "opponent": "TB", "matchup": "LAR @ TB", "spread": -4.5, "is_home": False},
+        {"team": "JAX", "opponent": "WAS", "matchup": "WAS @ JAX", "spread": -3.5, "is_home": True},
+    ],
+    18: [
+        {"team": "NE", "opponent": "MIA", "matchup": "MIA @ NE", "spread": -10.5, "is_home": True},
+        {"team": "BUF", "opponent": "NYJ", "matchup": "NYJ @ BUF", "spread": -10.0, "is_home": True},
+        {"team": "KC", "opponent": "LV", "matchup": "LV @ KC", "spread": -8.5, "is_home": True},
+        {"team": "SF", "opponent": "ARI", "matchup": "SF @ ARI", "spread": -8.5, "is_home": False},
+        {"team": "CIN", "opponent": "CLE", "matchup": "CLE @ CIN", "spread": -7.5, "is_home": True},
+    ],
+}
+
 def team_to_abbr(name: str) -> str:
     cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', str(name)).strip().lower()
     return NAME_TO_ABBR.get(cleaned, cleaned.upper()[:3])
@@ -102,12 +232,37 @@ def get_safe_abs_spread(cand_dict) -> float:
     sp = cand_dict.get("spread")
     return abs(sp) if sp is not None else 0.0
 
+def build_full_season_slates():
+    """
+    Constructs all 18 weekly slates, populating market and model probabilities
+    directly from baseline season lines.
+    """
+    slates = {}
+    for w in range(1, WEEKS + 1):
+        slates[w] = []
+        cands = BASELINE_SEASON_SLATES.get(w, [])
+        for c in cands:
+            sp = c["spread"]
+            m_prob = spread_to_market_prob(sp)
+            mod_prob = calculate_model_prob(m_prob, c["is_home"], sp, w, c["opponent"], c["team"])
+            slates[w].append({
+                "team": c["team"],
+                "opponent": c["opponent"],
+                "matchup": c["matchup"],
+                "spread": sp,
+                "is_home": c["is_home"],
+                "m_prob": m_prob,
+                "mod_prob": mod_prob,
+            })
+        slates[w].sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"]), reverse=True)
+    return slates
+
 def solve_survivor_path(all_weekly_slates, locked_picks):
     """
-    Double-Pick Solver:
-    - Weeks 1-14: 1 team per week.
-    - Weeks 15-18: 2 teams per week (Requires 22 distinct teams total).
-    - Null-safe spread checks to prevent TypeError on unlisted lines.
+    22-Pick Survivor Solver:
+    - Weeks 1-14: 1 pick each
+    - Weeks 15-18: 2 picks each (DOUBLE PICK WEEKS)
+    - 22 distinct teams total
     """
     used_teams = set()
     optimal = {w: [] for w in range(1, WEEKS + 1)}
@@ -135,7 +290,7 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
                 team = cand["team"]
                 opp = cand.get("opponent", "")
                 spread = get_safe_abs_spread(cand)
-                is_home = cand.get("home", False)
+                is_home = cand.get("is_home", False)
 
                 future_heavy_spots = sum(
                     1 for fw in range(w + 1, WEEKS + 1)
@@ -152,13 +307,12 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
 
                 score = spread * 10.0
 
-                # Future opportunity cost: Scale heavily in Weeks 10-14 to protect double-pick round
                 if w <= 6:
                     fv_weight = 3.0
                 elif w <= 14:
-                    fv_weight = 9.0
+                    fv_weight = 8.0
                 else:
-                    fv_weight = 4.0
+                    fv_weight = 3.0
 
                 if spread < 12.0:
                     score -= (future_heavy_spots * fv_weight)
@@ -188,136 +342,6 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
     optimal_display = {w: " / ".join(optimal[w]) for w in range(1, WEEKS + 1)}
     return optimal, optimal_display
 
-def fetch_online_schedule():
-    url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
-    schedule_by_week = {w: [] for w in range(1, WEEKS + 1)}
-
-    try:
-        res = requests.get(url, timeout=12)
-        if res.status_code == 200:
-            df = pd.read_csv(io.StringIO(res.text), low_memory=False)
-            df = df[(df['season'] == SEASON_YEAR) & (df['game_type'] == 'REG')]
-            for _, row in df.iterrows():
-                w = int(row['week'])
-                if 1 <= w <= WEEKS:
-                    schedule_by_week[w].append({
-                        "home_team": team_to_abbr(row['home_team']),
-                        "away_team": team_to_abbr(row['away_team'])
-                    })
-    except Exception as e:
-        print(f"Notice during schedule fetch: {e}")
-
-    if not schedule_by_week[1]:
-        schedule_by_week[1] = [
-            {"home_team": "LAC", "away_team": "ARI"}, {"home_team": "DET", "away_team": "NO"},
-            {"home_team": "CIN", "away_team": "TB"}, {"home_team": "KC", "away_team": "DEN"},
-            {"home_team": "PHI", "away_team": "WAS"}, {"home_team": "SEA", "away_team": "NE"},
-            {"home_team": "LAR", "away_team": "SF"}, {"home_team": "HOU", "away_team": "BUF"},
-            {"home_team": "PIT", "away_team": "ATL"}, {"home_team": "JAX", "away_team": "CLE"},
-            {"home_team": "TEN", "away_team": "NYJ"}, {"home_team": "IND", "away_team": "BAL"},
-            {"home_team": "LV", "away_team": "MIA"}, {"home_team": "MIN", "away_team": "GB"},
-            {"home_team": "NYG", "away_team": "DAL"}, {"home_team": "CAR", "away_team": "CHI"}
-        ]
-        for w in range(2, WEEKS + 1):
-            schedule_by_week[w] = [
-                {"home_team": "BAL", "away_team": "LV"}, {"home_team": "DAL", "away_team": "NO"},
-                {"home_team": "SF", "away_team": "MIN"}, {"home_team": "BUF", "away_team": "MIA"},
-                {"home_team": "KC", "away_team": "CIN"}
-            ]
-
-    return schedule_by_week
-
-def fetch_online_sportsbook_odds(api_key: str):
-    if not api_key:
-        return {}
-    url = f"https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/?apiKey={api_key}&regions=us&markets=spreads&oddsFormat=american"
-    odds_map = {}
-    try:
-        res = requests.get(url, timeout=12)
-        if res.status_code == 200:
-            data = res.json()
-            for game in data:
-                h_abbr = team_to_abbr(game.get("home_team", ""))
-                a_abbr = team_to_abbr(game.get("away_team", ""))
-                best_spread = None
-
-                for bm in game.get("bookmakers", []):
-                    for mkt in bm.get("markets", []):
-                        if mkt.get("key") == "spreads":
-                            for out in mkt.get("outcomes", []):
-                                if team_to_abbr(out.get("name")) == h_abbr:
-                                    pt = float(out.get("point", 0.0))
-                                    if best_spread is None or abs(pt) > abs(best_spread):
-                                        best_spread = pt
-                
-                if best_spread is not None:
-                    odds_map[(h_abbr, a_abbr)] = best_spread
-    except Exception as e:
-        print(f"Notice during live Odds API query: {e}")
-    return odds_map
-
-def fetch_espn_live_odds(week: int):
-    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week={week}"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    espn_odds = {}
-    try:
-        res = requests.get(url, headers=headers, timeout=10)
-        if res.status_code == 200:
-            events = res.json().get("events", [])
-            for ev in events:
-                comp = ev.get("competitions", [{}])[0]
-                competitors = comp.get("competitors", [])
-                if len(competitors) < 2:
-                    continue
-                home = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
-                away = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
-                h_abbr = team_to_abbr(home.get("team", {}).get("abbreviation", ""))
-                a_abbr = team_to_abbr(away.get("team", {}).get("abbreviation", ""))
-
-                odds_arr = comp.get("odds", [])
-                if odds_arr and "spread" in odds_arr[0]:
-                    espn_odds[(h_abbr, a_abbr)] = float(odds_arr[0]["spread"])
-    except Exception:
-        pass
-    return espn_odds
-
-def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
-    candidates = []
-    for g in games:
-        h = g["home_team"]
-        a = g["away_team"]
-
-        spread_val = None
-        if (h, a) in live_odds_map:
-            spread_val = live_odds_map[(h, a)]
-        elif (h, a) in espn_odds_map:
-            spread_val = espn_odds_map[(h, a)]
-
-        if spread_val is not None:
-            if spread_val <= 0:
-                m_prob = spread_to_market_prob(spread_val)
-                mod_prob = calculate_model_prob(m_prob, True, spread_val, week, a, h)
-                candidates.append({
-                    "team": h, "opponent": a, "matchup": f"{a} @ {h}",
-                    "spread": spread_val, "m_prob": m_prob, "mod_prob": mod_prob, "home": True
-                })
-            else:
-                away_spread = -spread_val
-                m_prob = spread_to_market_prob(away_spread)
-                mod_prob = calculate_model_prob(m_prob, False, away_spread, week, h, a)
-                candidates.append({
-                    "team": a, "opponent": h, "matchup": f"{a} @ {h}",
-                    "spread": away_spread, "m_prob": m_prob, "mod_prob": mod_prob, "home": False
-                })
-        else:
-            candidates.append({
-                "team": h, "opponent": a, "matchup": f"{a} @ {h}",
-                "spread": None, "m_prob": None, "mod_prob": None, "home": True
-            })
-
-    candidates.sort(key=lambda x: (x["mod_prob"] is not None, x["mod_prob"] if x["mod_prob"] is not None else 0), reverse=True)
-    return candidates
-
 def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previous_actuals, current_actuals, prev_prob, new_prob):
     try:
         log_sheet = spreadsheet.worksheet(LOG_TAB_NAME)
@@ -341,9 +365,9 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         if curr_act and curr_act != prev_act:
             newly_locked.append(f"Wk {w}: Locked {curr_act}")
 
-    trigger_description = "; ".join(newly_locked) if newly_locked else "Automated Odds/Schedule Update"
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Schedule/Line Re-optimization"
     log_rows = []
-    timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
 
     for w in range(1, WEEKS + 1):
@@ -351,7 +375,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         new_rec = current_picks.get(w, "")
 
         if old_rec and new_rec and old_rec != new_rec:
-            reason = "Rerouted due to User Pick" if newly_locked else "Line movement / Double-pick optimization"
+            reason = "Rerouted due to User Locked Pick" if newly_locked else "Double-pick portfolio rebalancing"
             log_rows.append([
                 timestamp_str, trigger_description, f"Week {w}", old_rec, new_rec, survival_shift_str, reason
             ])
@@ -365,8 +389,6 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
 def sync_to_google_sheets():
     print("Connecting to Google Sheets...")
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
-    odds_api_key = os.environ.get("ODDS_API_KEY", "")
-
     if not creds_json:
         raise ValueError("GCP_SERVICE_ACCOUNT_JSON environment variable missing.")
 
@@ -403,30 +425,10 @@ def sync_to_google_sheets():
 
     print(f"Detected user locked picks: {locked_picks}")
 
-    sheet.clear()
-    total_grid_rows = 1 + (WEEKS * 6)
-
-    sheet.format(f"A1:I{total_grid_rows + 20}", {
-        "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
-        "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
-    })
-
-    try:
-        sheet.unmerge_cells(f"A1:I{total_grid_rows + 20}")
-    except Exception:
-        pass
-
-    live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
-    schedule = fetch_online_schedule()
-
-    all_weekly_slates = {}
-    for w in range(1, WEEKS + 1):
-        espn_odds = fetch_espn_live_odds(w)
-        all_weekly_slates[w] = build_candidates_for_week(schedule[w], live_odds_map, espn_odds, w)
-
+    all_weekly_slates = build_full_season_slates()
     optimal_picks_by_week, optimal_display = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # Calculate joint survival probability
+    # Calculate joint cumulative win probability across all 22 picks
     cum_prob = 1.0
     for w in range(1, WEEKS + 1):
         chosen_teams = locked_picks.get(w, []) if locked_picks.get(w) else optimal_picks_by_week.get(w, [])
@@ -439,13 +441,26 @@ def sync_to_google_sheets():
                 week_joint_prob *= matched["mod_prob"]
             else:
                 week_joint_prob *= 0.74
-        
+
         if not chosen_teams:
             week_joint_prob = 0.74
 
         cum_prob *= week_joint_prob
 
     new_prob = cum_prob * 100.0
+
+    sheet.clear()
+    total_grid_rows = 1 + (WEEKS * 6)
+
+    sheet.format(f"A1:I{total_grid_rows + 20}", {
+        "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+        "textFormat": {"bold": False, "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}}
+    })
+
+    try:
+        sheet.unmerge_cells(f"A1:I{total_grid_rows + 20}")
+    except Exception:
+        pass
 
     headers = [
         "Week", "Recommended Pick", "|", "My Actual Pick",
@@ -487,7 +502,7 @@ def sync_to_google_sheets():
                 if is_rec:
                     yellow_rows.append(cand_row_num)
 
-                team_display = f"**{cand['team']}**" if cand.get("home", False) else cand["team"]
+                team_display = f"**{cand['team']}**" if cand.get("is_home", False) else cand["team"]
                 spread_display = f"{cand['spread']:+.1f}" if cand["spread"] is not None else ""
                 m_prob_display = f"{cand['m_prob'] * 100:.1f}%" if cand["m_prob"] is not None else ""
                 mod_prob_display = f"{cand['mod_prob'] * 100:.1f}%" if cand["mod_prob"] is not None else ""
@@ -550,7 +565,7 @@ def sync_to_google_sheets():
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
 
-    print("Success: Google Sheet updated cleanly with null-safe double-pick survivor model and audit logging.")
+    print("Success: Google Sheet updated cleanly with baseline season lines, 22-pick path, and audit log.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
