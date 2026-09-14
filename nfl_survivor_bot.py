@@ -67,7 +67,6 @@ DIVISIONS = {
 
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
 
-# FULL-SEASON 32-TEAM SLATES ACROSS ALL 18 WEEKS
 FULL_SEASON_BASELINE = {
     1: [
         {"team": "LAC", "opponent": "ARI", "matchup": "ARI @ LAC", "spread": -10.5, "is_home": True},
@@ -430,6 +429,29 @@ def get_safe_abs_spread(cand_dict) -> float:
     sp = cand_dict.get("spread")
     return abs(sp) if sp is not None else 0.0
 
+def fetch_sports_odds_history_lines():
+    """
+    Directly query Sports Odds History and Covers live archive
+    to extract confirmed lookahead/closing spreads across all matchups.
+    """
+    soh_lines = {}
+    url = "https://www.covers.com/sportsoddshistory/nfl-game-season/"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    try:
+        res = requests.get(url, headers=headers, timeout=12)
+        if res.status_code == 200:
+            matches = re.findall(r'([A-Z]{2,3})\s+vs\s+([A-Z]{2,3}).*?([+-]?\d+\.?\d*)', res.text)
+            for m in matches:
+                h_abbr = team_to_abbr(m[0])
+                a_abbr = team_to_abbr(m[1])
+                try:
+                    soh_lines[(h_abbr, a_abbr)] = float(m[2])
+                except ValueError:
+                    pass
+    except Exception as e:
+        print(f"Notice during Sports Odds History retrieval: {e}")
+    return soh_lines
+
 def fetch_online_sportsbook_odds(api_key: str):
     if not api_key:
         return {}
@@ -503,7 +525,14 @@ def read_existing_lines_from_sheet(sheet_data):
                 pass
     return existing_lines
 
-def build_full_season_slates(live_odds_map, sheet_existing_lines):
+def build_full_season_slates(live_odds_map, soh_lines, sheet_existing_lines):
+    """
+    Resolution Hierarchy:
+    1. The Odds API & ESPN live boards
+    2. Sports Odds History / Covers seasonal archive
+    3. Sheet persistent recorded line
+    4. Full season baseline schedule
+    """
     all_slates = {}
     for w in range(1, WEEKS + 1):
         espn_odds = fetch_espn_live_odds(w)
@@ -519,7 +548,7 @@ def build_full_season_slates(live_odds_map, sheet_existing_lines):
 
             chosen_spread = None
 
-            # 1. Live online odds
+            # 1. Check live odds
             if (h, a) in live_odds_map:
                 h_spread = live_odds_map[(h, a)]
                 chosen_spread = h_spread if is_home else -h_spread
@@ -527,11 +556,16 @@ def build_full_season_slates(live_odds_map, sheet_existing_lines):
                 h_spread = espn_odds[(h, a)]
                 chosen_spread = h_spread if is_home else -h_spread
 
-            # 2. Existing persistent sheet line
+            # 2. Check Sports Odds History
+            if chosen_spread is None and (h, a) in soh_lines:
+                h_spread = soh_lines[(h, a)]
+                chosen_spread = h_spread if is_home else -h_spread
+
+            # 3. Sheet fallback
             if chosen_spread is None and team in sheet_existing_lines:
                 chosen_spread = sheet_existing_lines[team]
 
-            # 3. Full-slate baseline line
+            # 4. Baseline
             if chosen_spread is None:
                 chosen_spread = game["spread"]
 
@@ -653,7 +687,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         if curr_act and curr_act != prev_act:
             newly_locked.append(f"Wk {w}: Locked {curr_act}")
 
-    trigger_description = "; ".join(newly_locked) if newly_locked else "Full Slate Re-optimization"
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Sports Odds History / Live Sync"
     log_rows = []
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
@@ -720,10 +754,13 @@ def sync_to_google_sheets():
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
     print(f"Retrieved {len(live_odds_map)} updated live sportsbook lines.")
 
-    # 1. EVALUATE ALL MATCHUPS ACROSS THE ENTIRE NFL
-    all_weekly_slates = build_full_season_slates(live_odds_map, sheet_existing_lines)
+    soh_lines = fetch_sports_odds_history_lines()
+    print(f"Retrieved {len(soh_lines)} lines from Sports Odds History archive.")
 
-    # 2. RUN FORWARD OPTIMIZER (Guaranteed 22 distinct picks)
+    # 1. EVALUATE ALL MATCHUPS (Search -> Sports Odds History -> Sheet -> Baseline)
+    all_weekly_slates = build_full_season_slates(live_odds_map, soh_lines, sheet_existing_lines)
+
+    # 2. RUN SOLVER FOR 22 DISTINCT PICKS
     optimal_picks_by_week, optimal_display = solve_survivor_path(all_weekly_slates, locked_picks)
 
     # 3. CALCULATE JOINT SURVIVAL PROBABILITY
@@ -747,9 +784,9 @@ def sync_to_google_sheets():
 
     new_prob = cum_prob * 100.0
 
-    # 4. PREPARE CURATED DISPLAY (Top 5 + Any Selected Team Not in Top 5)
+    # 4. PREPARE DISPLAY: TOP 5 + ANY SELECTED TEAM NOT IN TOP 5
     sheet_weekly_display = {}
-    total_display_rows = 1  # header row
+    total_display_rows = 1
     for w in range(1, WEEKS + 1):
         rec_teams = optimal_picks_by_week.get(w, [])
         user_teams = locked_picks.get(w, [])
@@ -758,13 +795,11 @@ def sync_to_google_sheets():
         top5 = all_weekly_slates.get(w, [])[:5]
         top5_teams = {c["team"] for c in top5}
 
-        # Any pick outside top 5 is appended
         outside_picks = [c for c in all_weekly_slates.get(w, []) if c["team"] in chosen_teams and c["team"] not in top5_teams]
         curated_slate = top5 + outside_picks
         sheet_weekly_display[w] = curated_slate
-        total_display_rows += (1 + len(curated_slate))  # header + items
+        total_display_rows += (1 + len(curated_slate))
 
-    # Clear and format grid
     sheet.clear()
     total_grid_rows = max(total_display_rows + 10, 1 + (WEEKS * 7))
 
@@ -885,7 +920,7 @@ def sync_to_google_sheets():
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
 
-    print("Success: Google Sheet updated cleanly with full-slate solver and curated display.")
+    print("Success: Google Sheet updated cleanly with Sports Odds History integration and curated display.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
