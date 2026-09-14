@@ -102,48 +102,42 @@ def get_safe_abs_spread(cand_dict) -> float:
     sp = cand_dict.get("spread")
     return abs(sp) if sp is not None else 0.0
 
-def fetch_espn_2026_schedule():
+def fetch_nflverse_schedule():
     """
-    Fetches the genuine, official 2026 NFL regular season schedule directly
-    from ESPN scoreboard API for all 18 weeks.
+    Fetches the genuine 2026 NFL regular season schedule from nflverse,
+    which reliably contains all 18 weeks and opening lookahead lines.
     """
+    url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
     schedule_by_week = {w: [] for w in range(1, WEEKS + 1)}
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     
-    print("Fetching authentic 2026 NFL regular-season schedule...")
-    for w in range(1, WEEKS + 1):
-        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week={w}&dates=2026"
-        try:
-            res = requests.get(url, headers=headers, timeout=10)
-            if res.status_code == 200:
-                events = res.json().get("events", [])
-                for ev in events:
-                    comp = ev.get("competitions", [{}])[0]
-                    competitors = comp.get("competitors", [])
-                    if len(competitors) < 2:
-                        continue
-                    home = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
-                    away = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
-                    h_abbr = team_to_abbr(home.get("team", {}).get("abbreviation", ""))
-                    a_abbr = team_to_abbr(away.get("team", {}).get("abbreviation", ""))
-
-                    line_val = None
-                    odds_arr = comp.get("odds", [])
-                    if odds_arr and "spread" in odds_arr[0]:
+    print("Fetching authentic 2026 NFL regular-season schedule from nflverse...")
+    try:
+        res = requests.get(url, timeout=15)
+        if res.status_code == 200:
+            df = pd.read_csv(io.StringIO(res.text), low_memory=False)
+            df = df[(df['season'] == SEASON_YEAR) & (df['game_type'] == 'REG')]
+            for _, row in df.iterrows():
+                w = int(row['week'])
+                if 1 <= w <= WEEKS:
+                    h_abbr = team_to_abbr(row['home_team'])
+                    a_abbr = team_to_abbr(row['away_team'])
+                    
+                    spread = None
+                    if pd.notnull(row.get('spread_line')):
                         try:
-                            line_val = float(odds_arr[0]["spread"])
+                            # nflverse typically stores the home team spread
+                            spread = float(row['spread_line'])
                         except (ValueError, TypeError):
-                            line_val = None
-
+                            pass
+                            
                     if h_abbr in ALL_TEAMS and a_abbr in ALL_TEAMS:
                         schedule_by_week[w].append({
                             "home_team": h_abbr,
                             "away_team": a_abbr,
-                            "line": line_val
+                            "nflverse_home_spread": spread
                         })
-        except Exception as e:
-            print(f"Notice on ESPN schedule fetch (Week {w}): {e}")
-        time.sleep(0.15)
+    except Exception as e:
+        print(f"Notice on nflverse schedule fetch: {e}")
         
     return schedule_by_week
 
@@ -176,6 +170,31 @@ def fetch_online_sportsbook_odds(api_key: str):
         print(f"Notice during live Odds API query: {e}")
     return odds_map
 
+def fetch_espn_live_odds(week: int):
+    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week={week}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    espn_odds = {}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            events = res.json().get("events", [])
+            for ev in events:
+                comp = ev.get("competitions", [{}])[0]
+                competitors = comp.get("competitors", [])
+                if len(competitors) < 2:
+                    continue
+                home = competitors[0] if competitors[0].get("homeAway") == "home" else competitors[1]
+                away = competitors[1] if competitors[0].get("homeAway") == "home" else competitors[0]
+                h_abbr = team_to_abbr(home.get("team", {}).get("abbreviation", ""))
+                a_abbr = team_to_abbr(away.get("team", {}).get("abbreviation", ""))
+
+                odds_arr = comp.get("odds", [])
+                if odds_arr and "spread" in odds_arr[0]:
+                    espn_odds[(h_abbr, a_abbr)] = float(odds_arr[0]["spread"])
+    except Exception:
+        pass
+    return espn_odds
+
 def read_existing_lines_from_sheet(sheet_data):
     existing_lines = {}
     if not sheet_data or len(sheet_data) < 2:
@@ -198,42 +217,50 @@ def read_existing_lines_from_sheet(sheet_data):
 def build_slates_for_2026(schedule_by_week, live_odds_map, sheet_existing_lines):
     """
     Constructs all weekly slates strictly using the actual 2026 matchups.
-    Lines are determined by:
-    1. Live sportsbook feed (The Odds API)
-    2. ESPN posted spread
-    3. Last recorded line on the spreadsheet
-    4. Conservative default (home -2.5) if zero lines exist
+    Hierarchy:
+    1. Live Odds API
+    2. ESPN Live Odds
+    3. Sheet Persistent Recorded Line
+    4. NFLverse Lookahead Baseline
+    5. Conservative Default (-2.5 Home)
     """
     all_slates = {}
     for w in range(1, WEEKS + 1):
         all_slates[w] = []
+        espn_odds = fetch_espn_live_odds(w)
         games = schedule_by_week.get(w, [])
 
         for g in games:
             h = g["home_team"]
             a = g["away_team"]
+            home_spread = None
 
-            chosen_spread = None
             if (h, a) in live_odds_map:
-                chosen_spread = live_odds_map[(h, a)]
-            elif g.get("line") is not None:
-                chosen_spread = g["line"]
+                home_spread = live_odds_map[(h, a)]
+            elif (h, a) in espn_odds:
+                home_spread = espn_odds[(h, a)]
             elif h in sheet_existing_lines:
-                chosen_spread = sheet_existing_lines[h]
+                home_spread = sheet_existing_lines[h]
+            elif a in sheet_existing_lines:
+                home_spread = -sheet_existing_lines[a]
+            elif g.get("nflverse_home_spread") is not None:
+                home_spread = float(g["nflverse_home_spread"])
+                # Invert if nflverse stores underdog spread positively
+                if home_spread > 0:
+                    home_spread = -home_spread
             else:
-                chosen_spread = -2.5  # Standard home-field baseline
+                home_spread = -2.5
 
-            # Evaluate Home Favorite
-            if chosen_spread <= 0:
+            if home_spread <= 0:
                 fav_team = h
                 dog_team = a
                 is_home = True
-                fav_spread = chosen_spread
+                fav_spread = home_spread
             else:
                 fav_team = a
                 dog_team = h
                 is_home = False
-                fav_spread = -chosen_spread
+                fav_spread = -home_spread
 
             m_prob = spread_to_market_prob(fav_spread)
             mod_prob = calculate_model_prob(m_prob, is_home, fav_spread, w, dog_team, fav_team)
@@ -416,8 +443,8 @@ def sync_to_google_sheets():
     print(f"Preserved {len(sheet_existing_lines)} existing verified lines.")
     print(f"Detected locked user picks: {locked_picks}")
 
-    # 1. FETCH AUTHENTIC 2026 SCHEDULE FROM ESPN
-    schedule_2026 = fetch_espn_2026_schedule()
+    # 1. FETCH AUTHENTIC 2026 SCHEDULE FROM NFLVERSE
+    schedule_2026 = fetch_nflverse_schedule()
 
     # 2. FETCH LIVE ODDS
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
