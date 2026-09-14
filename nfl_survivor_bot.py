@@ -141,18 +141,23 @@ def fetch_yahoo_season_lines():
     url = "https://sports.yahoo.com/nfl/betting/article/2026-nfl-betting-lines-odds-for-every-game-this-season-164646933.html"
     yahoo_lines = {}
     print("Attempting to parse Yahoo Sports full season lines...")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
-        tables = pd.read_html(url)
-        for df in tables:
-            for _, row in df.iterrows():
-                if 'Home' in row and 'Spread' in row and pd.notna(row['Home']):
-                    h_abbr = team_to_abbr(str(row['Home']))
-                    a_abbr = team_to_abbr(str(row.get('Away', '')))
-                    spread_str = str(row['Spread']).replace('PK', '0').strip()
-                    try:
-                        yahoo_lines[(h_abbr, a_abbr)] = float(spread_str)
-                    except ValueError:
-                        continue
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code == 200:
+            tables = pd.read_html(io.StringIO(res.text))
+            for df in tables:
+                for _, row in df.iterrows():
+                    if 'Home' in row and 'Spread' in row and pd.notna(row['Home']):
+                        h_abbr = team_to_abbr(str(row['Home']))
+                        a_abbr = team_to_abbr(str(row.get('Away', '')))
+                        spread_str = str(row['Spread']).replace('PK', '0').strip()
+                        try:
+                            yahoo_lines[(h_abbr, a_abbr)] = float(spread_str)
+                        except ValueError:
+                            continue
+        else:
+            print(f"Notice: Yahoo returned status code {res.status_code}")
     except Exception as e:
         print(f"Notice: Could not parse Yahoo lines: {e}")
     
