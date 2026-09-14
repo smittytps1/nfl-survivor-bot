@@ -44,15 +44,15 @@ NAME_TO_ABBR = {
     "minnesota vikings": "MIN", "vikings": "MIN", "min": "MIN",
     "new england patriots": "NE", "patriots": "NE", "ne": "NE",
     "new orleans saints": "NO", "saints": "NO", "no": "NO",
-    "new york giants": "NYG", "giants": "NYG", "nyg": "NYG",
-    "new york jets": "NYJ", "jets": "NYJ", "nyj": "NYJ",
+    "new york giants": "NYG", "giants": "NYG", "nyg": "NYG", "ny giants": "NYG",
+    "new york jets": "NYJ", "jets": "NYJ", "nyj": "NYJ", "ny jets": "NYJ",
     "philadelphia eagles": "PHI", "eagles": "PHI", "phi": "PHI",
     "pittsburgh steelers": "PIT", "steelers": "PIT", "pit": "PIT",
     "san francisco 49ers": "SF", "49ers": "SF", "sf": "SF",
     "seattle seahawks": "SEA", "seahawks": "SEA", "sea": "SEA",
     "tampa bay buccaneers": "TB", "buccaneers": "TB", "tb": "TB",
     "tennessee titans": "TEN", "titans": "TEN", "ten": "TEN",
-    "washington commanders": "WAS", "commanders": "WAS", "was": "WAS"
+    "washington commanders": "WAS", "commanders": "WAS", "was": "WAS", "washington": "WAS"
 }
 
 DIVISIONS = {
@@ -137,10 +137,10 @@ def fetch_nflverse_schedule():
         
     return schedule_by_week
 
-def fetch_yahoo_season_lines():
-    url = "https://sports.yahoo.com/nfl/betting/article/2026-nfl-betting-lines-odds-for-every-game-this-season-164646933.html"
-    yahoo_lines = {}
-    print("Attempting to parse Yahoo Sports full season lines...")
+def fetch_gridiron_season_lines():
+    url = "https://gridirongames.com/football-schedules/nfl-weekly-betting-lines/"
+    gridiron_lines = {}
+    print("Attempting to parse Gridiron Games lines...")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         res = requests.get(url, headers=headers, timeout=15)
@@ -148,20 +148,36 @@ def fetch_yahoo_season_lines():
             tables = pd.read_html(io.StringIO(res.text))
             for df in tables:
                 for _, row in df.iterrows():
-                    if 'Home' in row and 'Spread' in row and pd.notna(row['Home']):
-                        h_abbr = team_to_abbr(str(row['Home']))
-                        a_abbr = team_to_abbr(str(row.get('Away', '')))
-                        spread_str = str(row['Spread']).replace('PK', '0').strip()
-                        try:
-                            yahoo_lines[(h_abbr, a_abbr)] = float(spread_str)
-                        except ValueError:
-                            continue
-        else:
-            print(f"Notice: Yahoo returned status code {res.status_code}")
+                    teams_found = []
+                    spread_val = None
+                    
+                    for val in row.values:
+                        val_str = str(val).strip()
+                        if not val_str or val_str.lower() in ['nan', 'none']: continue
+                        
+                        abbr = team_to_abbr(val_str.replace('@', '').strip())
+                        if abbr in ALL_TEAMS and abbr not in teams_found:
+                            teams_found.append(abbr)
+                        
+                        if spread_val is None:
+                            if val_str.upper() == 'PK':
+                                spread_val = 0.0
+                            elif re.match(r'^[+-]?\d+\.?\d*$', val_str):
+                                try:
+                                    f_val = float(val_str)
+                                    if abs(f_val) <= 25.0:
+                                        spread_val = f_val
+                                except ValueError:
+                                    pass
+
+                    if len(teams_found) >= 2 and spread_val is not None:
+                        t1, t2 = teams_found[0], teams_found[1]
+                        gridiron_lines[(t1, t2)] = spread_val
+                        gridiron_lines[(t2, t1)] = -spread_val
     except Exception as e:
-        print(f"Notice: Could not parse Yahoo lines: {e}")
+        print(f"Notice: Could not parse Gridiron Games lines: {e}")
     
-    return yahoo_lines
+    return gridiron_lines
 
 def fetch_online_sportsbook_odds(api_key: str):
     if not api_key:
@@ -217,7 +233,7 @@ def fetch_espn_live_odds(week: int):
         pass
     return espn_odds
 
-def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds, yahoo_odds_map):
+def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds, gridiron_odds_map):
     try:
         lines_sheet = spreadsheet.worksheet(LINES_TAB_NAME)
         existing_data = lines_sheet.get_all_values()
@@ -267,9 +283,9 @@ def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, al
             elif (w, h, a) in existing_lines:
                 chosen_spread = existing_lines[(w, h, a)]
                 source = "Persistent (Lines Tab)"
-            elif (h, a) in yahoo_odds_map:
-                chosen_spread = yahoo_odds_map[(h, a)]
-                source = "Preseason (Yahoo)"
+            elif (h, a) in gridiron_odds_map:
+                chosen_spread = gridiron_odds_map[(h, a)]
+                source = "Preseason (Gridiron Games)"
             elif g.get("nflverse_home_spread") is not None:
                 nflv_spread = float(g["nflverse_home_spread"])
                 chosen_spread = -nflv_spread if nflv_spread > 0 else nflv_spread
@@ -509,9 +525,9 @@ def sync_to_google_sheets():
     for w in range(1, WEEKS + 1):
         all_espn_odds.update(fetch_espn_live_odds(w))
 
-    yahoo_odds_map = fetch_yahoo_season_lines()
+    gridiron_odds_map = fetch_gridiron_season_lines()
 
-    reconciled_schedule = reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds, yahoo_odds_map)
+    reconciled_schedule = reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds, gridiron_odds_map)
 
     all_weekly_slates = build_slates_from_reconciled(reconciled_schedule)
     optimal_picks_by_week, optimal_display = solve_survivor_path(all_weekly_slates, locked_picks)
