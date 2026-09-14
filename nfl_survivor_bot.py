@@ -1,14 +1,15 @@
-from datetime import datetime
+import os
 import io
+import re
 import json
 import math
-import os
-import re
-from google.oauth2.service_account import Credentials
-import gspread
-import numpy as np
-import pandas as pd
+import time
+from datetime import datetime
 import requests
+import pandas as pd
+import numpy as np
+import gspread
+from google.oauth2.service_account import Credentials
 
 # --- SPREADSHEET CONFIGURATION ---
 SHEET_TITLE = "NFL Picks"
@@ -16,6 +17,7 @@ TAB_NAME = "2026"
 LOG_TAB_NAME = "Adjustment Log"
 WEEKS = 18
 SEASON_YEAR = 2026
+DOUBLE_PICK_WEEKS = {15, 16, 17, 18}
 
 NAME_TO_ABBR = {
     "arizona cardinals": "ARI", "cardinals": "ARI", "ari": "ARI", "az": "ARI",
@@ -69,6 +71,13 @@ def team_to_abbr(name: str) -> str:
     cleaned = re.sub(r'[^a-zA-Z0-9 ]', '', str(name)).strip().lower()
     return NAME_TO_ABBR.get(cleaned, cleaned.upper()[:3])
 
+def parse_actual_picks(cell_text: str):
+    if not cell_text:
+        return []
+    parts = re.split(r'[/,;\s]+', cell_text.strip())
+    teams = [team_to_abbr(p) for p in parts if p.strip()]
+    return [t for t in teams if t in ALL_TEAMS]
+
 def is_divisional_road_game(team: str, opponent: str, is_home: bool) -> bool:
     if is_home:
         return False
@@ -89,79 +98,95 @@ def calculate_model_prob(market_prob: float, is_home: bool, spread: float, week:
     adj_prob = market_prob + early_discount + home_edge + div_road_penalty + heavy_fav_boost
     return min(0.96, max(0.50, round(adj_prob, 3)))
 
+def get_safe_abs_spread(cand_dict) -> float:
+    sp = cand_dict.get("spread")
+    return abs(sp) if sp is not None else 0.0
+
 def solve_survivor_path(all_weekly_slates, locked_picks):
+    """
+    Double-Pick Solver:
+    - Weeks 1-14: 1 team per week.
+    - Weeks 15-18: 2 teams per week (Requires 22 distinct teams total).
+    - Null-safe spread checks to prevent TypeError on unlisted lines.
+    """
     used_teams = set()
-    optimal = {}
+    optimal = {w: [] for w in range(1, WEEKS + 1)}
+
+    # Pre-seed locked user picks
+    for w in range(1, WEEKS + 1):
+        for t in locked_picks.get(w, []):
+            used_teams.add(t)
 
     for w in range(1, WEEKS + 1):
-        if w in locked_picks and locked_picks[w]:
-            used_teams.add(locked_picks[w])
+        picks_needed = 2 if w in DOUBLE_PICK_WEEKS else 1
+        user_picks = locked_picks.get(w, [])
 
-    for w in range(1, WEEKS + 1):
-        if w in locked_picks and locked_picks[w]:
-            optimal[w] = locked_picks[w]
-            continue
+        for t in user_picks:
+            if t not in optimal[w]:
+                optimal[w].append(t)
 
-        cands = [c for c in all_weekly_slates.get(w, []) if c["team"] not in used_teams and c["mod_prob"] is not None]
-        if not cands:
-            optimal[w] = ""
-            continue
+        while len(optimal[w]) < picks_needed:
+            cands = [c for c in all_weekly_slates.get(w, []) if c["team"] not in used_teams and c["mod_prob"] is not None]
+            if not cands:
+                break
 
-        scored_cands = []
-        for cand in cands:
-            team = cand["team"]
-            opp = cand.get("opponent", "")
-            spread = abs(cand.get("spread", 0.0))
-            is_home = cand.get("home", False)
+            scored_cands = []
+            for cand in cands:
+                team = cand["team"]
+                opp = cand.get("opponent", "")
+                spread = get_safe_abs_spread(cand)
+                is_home = cand.get("home", False)
 
-            future_heavy_spots = sum(
-                1 for fw in range(w + 1, WEEKS + 1)
-                for fc in all_weekly_slates.get(fw, [])
-                if fc["team"] == team and abs(fc.get("spread", 0.0)) >= 9.5
-            )
+                future_heavy_spots = sum(
+                    1 for fw in range(w + 1, WEEKS + 1)
+                    for fc in all_weekly_slates.get(fw, [])
+                    if fc["team"] == team and get_safe_abs_spread(fc) >= 9.5
+                )
 
-            better_spot_soon = any(
-                abs(fc.get("spread", 0.0)) >= (spread + 1.5)
-                for fw in [w + 1, w + 2] if fw <= WEEKS
-                for fc in all_weekly_slates.get(fw, [])
-                if fc["team"] == team
-            )
+                better_spot_soon = any(
+                    get_safe_abs_spread(fc) >= (spread + 1.5)
+                    for fw in [w + 1, w + 2] if fw <= WEEKS
+                    for fc in all_weekly_slates.get(fw, [])
+                    if fc["team"] == team
+                )
 
-            score = spread * 10.0
+                score = spread * 10.0
 
-            if w <= 6:
-                fv_weight = 4.0
-            elif w <= 13:
-                fv_weight = 8.0
-            else:
-                fv_weight = 14.0
+                # Future opportunity cost: Scale heavily in Weeks 10-14 to protect double-pick round
+                if w <= 6:
+                    fv_weight = 3.0
+                elif w <= 14:
+                    fv_weight = 9.0
+                else:
+                    fv_weight = 4.0
 
-            if spread < 12.0:
-                score -= (future_heavy_spots * fv_weight)
+                if spread < 12.0:
+                    score -= (future_heavy_spots * fv_weight)
 
-            if better_spot_soon:
-                score -= 30.0
+                if better_spot_soon:
+                    score -= 30.0
 
-            if w <= 6 and is_divisional_road_game(team, opp, is_home):
-                score -= 40.0
+                if w <= 6 and is_divisional_road_game(team, opp, is_home):
+                    score -= 40.0
 
-            if w <= 4:
-                if spread < 7.0:
-                    score -= 50.0
-                elif spread < 8.5 and not is_home:
-                    score -= 35.0
+                if w <= 4:
+                    if spread < 7.0:
+                        score -= 50.0
+                    elif spread < 8.5 and not is_home:
+                        score -= 35.0
 
-            if is_home:
-                score += 4.0
+                if is_home:
+                    score += 4.0
 
-            scored_cands.append((score, cand))
+                scored_cands.append((score, cand))
 
-        scored_cands.sort(key=lambda x: x[0], reverse=True)
-        best_pick = scored_cands[0][1]["team"]
-        optimal[w] = best_pick
-        used_teams.add(best_pick)
+            scored_cands.sort(key=lambda x: x[0], reverse=True)
+            best_pick = scored_cands[0][1]["team"]
+            optimal[w].append(best_pick)
+            used_teams.add(best_pick)
 
-    return optimal
+    optimal_display = {w: " / ".join(optimal[w]) for w in range(1, WEEKS + 1)}
+    return optimal, optimal_display
 
 def fetch_online_schedule():
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
@@ -294,10 +319,6 @@ def build_candidates_for_week(games, live_odds_map, espn_odds_map, week):
     return candidates
 
 def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previous_actuals, current_actuals, prev_prob, new_prob):
-    """
-    Creates or updates an 'Adjustment Log' tab that tracks every single shift
-    in recommendations caused by locked picks or line changes.
-    """
     try:
         log_sheet = spreadsheet.worksheet(LOG_TAB_NAME)
     except gspread.WorksheetNotFound:
@@ -313,7 +334,6 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
             "horizontalAlignment": "CENTER"
         })
 
-    # Identify user lock triggers
     newly_locked = []
     for w in range(1, WEEKS + 1):
         prev_act = previous_actuals.get(w, "")
@@ -321,8 +341,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         if curr_act and curr_act != prev_act:
             newly_locked.append(f"Wk {w}: Locked {curr_act}")
 
-    trigger_description = "; ".join(newly_locked) if newly_locked else "Automated Odds/Line Update"
-
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Automated Odds/Schedule Update"
     log_rows = []
     timestamp_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
     survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
@@ -332,7 +351,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         new_rec = current_picks.get(w, "")
 
         if old_rec and new_rec and old_rec != new_rec:
-            reason = "Rerouted due to User Pick" if newly_locked else "Line movement / EV shift"
+            reason = "Rerouted due to User Pick" if newly_locked else "Line movement / Double-pick optimization"
             log_rows.append([
                 timestamp_str, trigger_description, f"Week {w}", old_rec, new_rec, survival_shift_str, reason
             ])
@@ -369,12 +388,12 @@ def sync_to_google_sheets():
             if row_idx <= len(existing_data):
                 row = existing_data[row_idx - 1]
                 if len(row) >= 2 and row[1].strip():
-                    previous_picks[w] = row[1].strip().upper()
+                    previous_picks[w] = row[1].strip()
                 if len(row) >= 4 and row[3].strip():
-                    locked_picks[w] = row[3].strip().upper()
-                    previous_actuals[w] = row[3].strip().upper()
+                    cell_val = row[3].strip()
+                    locked_picks[w] = parse_actual_picks(cell_val)
+                    previous_actuals[w] = cell_val
         
-        # Read old probability if present
         if len(existing_data) >= 20 and len(existing_data[19]) >= 2:
             prob_raw = existing_data[19][1].replace("%", "").strip()
             try:
@@ -382,7 +401,7 @@ def sync_to_google_sheets():
             except ValueError:
                 pass
 
-    print(f"Detected {len(locked_picks)} user locked picks: {locked_picks}")
+    print(f"Detected user locked picks: {locked_picks}")
 
     sheet.clear()
     total_grid_rows = 1 + (WEEKS * 6)
@@ -405,22 +424,26 @@ def sync_to_google_sheets():
         espn_odds = fetch_espn_live_odds(w)
         all_weekly_slates[w] = build_candidates_for_week(schedule[w], live_odds_map, espn_odds, w)
 
-    optimal_path = solve_survivor_path(all_weekly_slates, locked_picks)
+    optimal_picks_by_week, optimal_display = solve_survivor_path(all_weekly_slates, locked_picks)
 
+    # Calculate joint survival probability
     cum_prob = 1.0
     for w in range(1, WEEKS + 1):
-        effective_team = locked_picks.get(w, optimal_path.get(w, ""))
+        chosen_teams = locked_picks.get(w, []) if locked_picks.get(w) else optimal_picks_by_week.get(w, [])
         week_cands = all_weekly_slates.get(w, [])
-        matched = next((c for c in week_cands if c["team"] == effective_team and c["mod_prob"] is not None), None)
+
+        week_joint_prob = 1.0
+        for t in chosen_teams:
+            matched = next((c for c in week_cands if c["team"] == t and c["mod_prob"] is not None), None)
+            if matched and matched["mod_prob"] is not None:
+                week_joint_prob *= matched["mod_prob"]
+            else:
+                week_joint_prob *= 0.74
         
-        if matched and matched["mod_prob"] is not None:
-            w_prob = matched["mod_prob"]
-        elif week_cands and week_cands[0]["mod_prob"] is not None:
-            w_prob = week_cands[0]["mod_prob"]
-        else:
-            w_prob = 0.74
-            
-        cum_prob *= w_prob
+        if not chosen_teams:
+            week_joint_prob = 0.74
+
+        cum_prob *= week_joint_prob
 
     new_prob = cum_prob * 100.0
 
@@ -434,11 +457,12 @@ def sync_to_google_sheets():
 
     for w in range(1, WEEKS + 1):
         r_idx = w
-        rec_team = optimal_path.get(w, "")
-        matrix[r_idx][0] = f"Week {w}"
-        matrix[r_idx][1] = rec_team
+        rec_display = optimal_display.get(w, "")
+        user_actual_str = previous_actuals.get(w, "")
+        matrix[r_idx][0] = f"Week {w} (2 Picks)" if w in DOUBLE_PICK_WEEKS else f"Week {w}"
+        matrix[r_idx][1] = rec_display
         matrix[r_idx][2] = ""
-        matrix[r_idx][3] = locked_picks.get(w, "")
+        matrix[r_idx][3] = user_actual_str
 
     matrix[19][0] = "🏆 Season Survival"
     matrix[19][1] = f"{new_prob:.2f}%"
@@ -447,18 +471,19 @@ def sync_to_google_sheets():
     merge_ranges = []
 
     for w in range(1, WEEKS + 1):
-        rec_team = optimal_path.get(w, "")
+        rec_teams = optimal_picks_by_week.get(w, [])
         cands = all_weekly_slates.get(w, [])[:5]
         block_start_row = 1 + (w - 1) * 6 + 1
 
-        matrix[block_start_row - 1][4] = f"Top candidates for Week {w}"
+        label_suffix = " (DOUBLE PICK ROUND)" if w in DOUBLE_PICK_WEEKS else ""
+        matrix[block_start_row - 1][4] = f"Top candidates for Week {w}{label_suffix}"
         merge_ranges.append(f"E{block_start_row}:I{block_start_row}")
 
         for i in range(5):
             cand_row_num = block_start_row + 1 + i
             if i < len(cands):
                 cand = cands[i]
-                is_rec = (cand["team"] == rec_team and rec_team != "")
+                is_rec = cand["team"] in rec_teams
                 if is_rec:
                     yellow_rows.append(cand_row_num)
 
@@ -521,12 +546,11 @@ def sync_to_google_sheets():
     if batch_formats:
         sheet.batch_format(batch_formats)
 
-    # Log adjustments to the new audit tab
     log_adjustments_to_sheet(
-        spreadsheet, previous_picks, optimal_path, previous_actuals, locked_picks, prev_prob, new_prob
+        spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
 
-    print("Success: Google Sheet updated cleanly with dynamic adjustments and audit logging.")
+    print("Success: Google Sheet updated cleanly with null-safe double-pick survivor model and audit logging.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
