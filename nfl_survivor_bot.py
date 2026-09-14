@@ -67,13 +67,25 @@ DIVISIONS = {
 
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
 
-BASELINE_SEASON_SLATES = {
+# FULL-SEASON 32-TEAM SLATES ACROSS ALL 18 WEEKS
+FULL_SEASON_BASELINE = {
     1: [
         {"team": "LAC", "opponent": "ARI", "matchup": "ARI @ LAC", "spread": -10.5, "is_home": True},
         {"team": "JAX", "opponent": "CLE", "matchup": "CLE @ JAX", "spread": -9.0, "is_home": True},
         {"team": "DET", "opponent": "NO", "matchup": "NO @ DET", "spread": -7.0, "is_home": True},
         {"team": "PHI", "opponent": "WAS", "matchup": "WAS @ PHI", "spread": -5.5, "is_home": True},
         {"team": "LAR", "opponent": "SF", "matchup": "SF @ LAR", "spread": -4.0, "is_home": True},
+        {"team": "KC", "opponent": "DEN", "matchup": "DEN @ KC", "spread": -7.5, "is_home": True},
+        {"team": "CIN", "opponent": "TB", "matchup": "TB @ CIN", "spread": -6.5, "is_home": True},
+        {"team": "SEA", "opponent": "NE", "matchup": "NE @ SEA", "spread": -6.0, "is_home": True},
+        {"team": "BUF", "opponent": "HOU", "matchup": "BUF @ HOU", "spread": -4.5, "is_home": False},
+        {"team": "MIA", "opponent": "LV", "matchup": "LV @ MIA", "spread": -4.0, "is_home": True},
+        {"team": "BAL", "opponent": "IND", "matchup": "BAL @ IND", "spread": -3.5, "is_home": False},
+        {"team": "CHI", "opponent": "CAR", "matchup": "CAR @ CHI", "spread": -3.5, "is_home": True},
+        {"team": "PIT", "opponent": "ATL", "matchup": "ATL @ PIT", "spread": -3.0, "is_home": True},
+        {"team": "TEN", "opponent": "NYJ", "matchup": "NYJ @ TEN", "spread": -2.5, "is_home": True},
+        {"team": "GB", "opponent": "MIN", "matchup": "GB @ MIN", "spread": -2.5, "is_home": False},
+        {"team": "DAL", "opponent": "NYG", "matchup": "DAL @ NYG", "spread": -3.0, "is_home": False},
     ],
     2: [
         {"team": "SF", "opponent": "MIA", "matchup": "MIA @ SF", "spread": -10.5, "is_home": True},
@@ -81,6 +93,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "SEA", "opponent": "ARI", "matchup": "SEA @ ARI", "spread": -10.0, "is_home": False},
         {"team": "LAC", "opponent": "LV", "matchup": "LV @ LAC", "spread": -9.0, "is_home": True},
         {"team": "BAL", "opponent": "NO", "matchup": "NO @ BAL", "spread": -7.5, "is_home": True},
+        {"team": "KC", "opponent": "CIN", "matchup": "CIN @ KC", "spread": -7.0, "is_home": True},
+        {"team": "DAL", "opponent": "NO", "matchup": "NO @ DAL", "spread": -6.5, "is_home": True},
+        {"team": "BUF", "opponent": "MIA", "matchup": "BUF @ MIA", "spread": -6.0, "is_home": False},
+        {"team": "DET", "opponent": "TB", "matchup": "TB @ DET", "spread": -5.5, "is_home": True},
+        {"team": "PHI", "opponent": "ATL", "matchup": "ATL @ PHI", "spread": -5.5, "is_home": True},
+        {"team": "HOU", "opponent": "CHI", "matchup": "CHI @ HOU", "spread": -5.0, "is_home": True},
+        {"team": "IND", "opponent": "GB", "matchup": "IND @ GB", "spread": -3.5, "is_home": False},
+        {"team": "DEN", "opponent": "PIT", "matchup": "PIT @ DEN", "spread": -3.0, "is_home": True},
+        {"team": "JAX", "opponent": "CLE", "matchup": "CLE @ JAX", "spread": -3.0, "is_home": True},
+        {"team": "NYJ", "opponent": "TEN", "matchup": "NYJ @ TEN", "spread": -3.5, "is_home": False},
+        {"team": "MIN", "opponent": "SF", "matchup": "SF @ MIN", "spread": -4.0, "is_home": False},
     ],
     3: [
         {"team": "SF", "opponent": "ARI", "matchup": "ARI @ SF", "spread": -11.5, "is_home": True},
@@ -88,6 +111,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "GB", "opponent": "ATL", "matchup": "ATL @ GB", "spread": -7.5, "is_home": True},
         {"team": "KC", "opponent": "MIA", "matchup": "KC @ MIA", "spread": -7.5, "is_home": False},
         {"team": "NYG", "opponent": "TEN", "matchup": "TEN @ NYG", "spread": -4.0, "is_home": True},
+        {"team": "BUF", "opponent": "JAX", "matchup": "JAX @ BUF", "spread": -7.0, "is_home": True},
+        {"team": "CIN", "opponent": "WAS", "matchup": "WAS @ CIN", "spread": -7.0, "is_home": True},
+        {"team": "CLE", "opponent": "NYG", "matchup": "NYG @ CLE", "spread": -6.5, "is_home": True},
+        {"team": "TB", "opponent": "DEN", "matchup": "DEN @ TB", "spread": -6.0, "is_home": True},
+        {"team": "SEA", "opponent": "MIA", "matchup": "MIA @ SEA", "spread": -5.0, "is_home": True},
+        {"team": "BAL", "opponent": "DAL", "matchup": "BAL @ DAL", "spread": -3.5, "is_home": False},
+        {"team": "LAC", "opponent": "PIT", "matchup": "LAC @ PIT", "spread": -3.0, "is_home": False},
+        {"team": "NO", "opponent": "PHI", "matchup": "PHI @ NO", "spread": -3.0, "is_home": True},
+        {"team": "CHI", "opponent": "IND", "matchup": "CHI @ IND", "spread": -2.5, "is_home": False},
+        {"team": "LV", "opponent": "CAR", "matchup": "CAR @ LV", "spread": -4.5, "is_home": True},
+        {"team": "HOU", "opponent": "MIN", "matchup": "HOU @ MIN", "spread": -3.0, "is_home": False},
     ],
     4: [
         {"team": "BAL", "opponent": "TEN", "matchup": "TEN @ BAL", "spread": -9.0, "is_home": True},
@@ -95,6 +129,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "MIN", "opponent": "MIA", "matchup": "MIA @ MIN", "spread": -7.5, "is_home": True},
         {"team": "NYG", "opponent": "ARI", "matchup": "ARI @ NYG", "spread": -7.0, "is_home": True},
         {"team": "BUF", "opponent": "NE", "matchup": "NE @ BUF", "spread": -4.0, "is_home": True},
+        {"team": "SF", "opponent": "NE", "matchup": "NE @ SF", "spread": -10.5, "is_home": True},
+        {"team": "KC", "opponent": "LAC", "matchup": "KC @ LAC", "spread": -7.0, "is_home": False},
+        {"team": "NYJ", "opponent": "DEN", "matchup": "DEN @ NYJ", "spread": -6.5, "is_home": True},
+        {"team": "DET", "opponent": "SEA", "matchup": "SEA @ DET", "spread": -6.0, "is_home": True},
+        {"team": "HOU", "opponent": "JAX", "matchup": "JAX @ HOU", "spread": -5.5, "is_home": True},
+        {"team": "DAL", "opponent": "NYG", "matchup": "DAL @ NYG", "spread": -4.5, "is_home": False},
+        {"team": "CIN", "opponent": "CAR", "matchup": "CIN @ CAR", "spread": -4.5, "is_home": False},
+        {"team": "PHI", "opponent": "TB", "matchup": "PHI @ TB", "spread": -3.5, "is_home": False},
+        {"team": "GB", "opponent": "MIN", "matchup": "MIN @ GB", "spread": -3.5, "is_home": True},
+        {"team": "IND", "opponent": "PIT", "matchup": "PIT @ IND", "spread": -2.5, "is_home": True},
+        {"team": "WAS", "opponent": "ARI", "matchup": "WAS @ ARI", "spread": -3.5, "is_home": False},
     ],
     5: [
         {"team": "NE", "opponent": "LV", "matchup": "LV @ NE", "spread": -8.5, "is_home": True},
@@ -102,6 +147,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "CIN", "opponent": "MIA", "matchup": "CIN @ MIA", "spread": -6.5, "is_home": False},
         {"team": "LAR", "opponent": "BUF", "matchup": "BUF @ LAR", "spread": -4.5, "is_home": True},
         {"team": "BAL", "opponent": "ATL", "matchup": "BAL @ ATL", "spread": -4.5, "is_home": False},
+        {"team": "KC", "opponent": "NO", "matchup": "NO @ KC", "spread": -6.0, "is_home": True},
+        {"team": "SEA", "opponent": "NYG", "matchup": "NYG @ SEA", "spread": -6.5, "is_home": True},
+        {"team": "CHI", "opponent": "CAR", "matchup": "CAR @ CHI", "spread": -5.0, "is_home": True},
+        {"team": "WAS", "opponent": "CLE", "matchup": "CLE @ WAS", "spread": -4.0, "is_home": True},
+        {"team": "DAL", "opponent": "PIT", "matchup": "DAL @ PIT", "spread": -3.5, "is_home": False},
+        {"team": "GB", "opponent": "LAR", "matchup": "GB @ LAR", "spread": -3.5, "is_home": False},
+        {"team": "HOU", "opponent": "BUF", "matchup": "BUF @ HOU", "spread": -3.0, "is_home": True},
+        {"team": "DEN", "opponent": "LV", "matchup": "LV @ DEN", "spread": -3.0, "is_home": True},
+        {"team": "JAX", "opponent": "IND", "matchup": "IND @ JAX", "spread": -3.0, "is_home": True},
+        {"team": "MIN", "opponent": "NYJ", "matchup": "NYJ @ MIN", "spread": -3.0, "is_home": True},
+        {"team": "TB", "opponent": "ATL", "matchup": "TB @ ATL", "spread": -2.5, "is_home": False},
     ],
     6: [
         {"team": "LAR", "opponent": "ARI", "matchup": "ARI @ LAR", "spread": -14.5, "is_home": True},
@@ -109,6 +165,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "PHI", "opponent": "CAR", "matchup": "CAR @ PHI", "spread": -7.0, "is_home": True},
         {"team": "BUF", "opponent": "LV", "matchup": "BUF @ LV", "spread": -7.0, "is_home": True},
         {"team": "BAL", "opponent": "CLE", "matchup": "BAL @ CLE", "spread": -7.0, "is_home": False},
+        {"team": "HOU", "opponent": "NE", "matchup": "HOU @ NE", "spread": -6.5, "is_home": False},
+        {"team": "GB", "opponent": "ARI", "matchup": "ARI @ GB", "spread": -6.0, "is_home": True},
+        {"team": "ATL", "opponent": "CAR", "matchup": "ATL @ CAR", "spread": -5.5, "is_home": False},
+        {"team": "CIN", "opponent": "NYG", "matchup": "CIN @ NYG", "spread": -4.5, "is_home": False},
+        {"team": "CHI", "opponent": "JAX", "matchup": "JAX @ CHI", "spread": -4.0, "is_home": True},
+        {"team": "DET", "opponent": "DAL", "matchup": "DET @ DAL", "spread": -3.5, "is_home": False},
+        {"team": "LAC", "opponent": "DEN", "matchup": "LAC @ DEN", "spread": -3.5, "is_home": False},
+        {"team": "PIT", "opponent": "LV", "matchup": "PIT @ LV", "spread": -3.0, "is_home": False},
+        {"team": "SF", "opponent": "SEA", "matchup": "SF @ SEA", "spread": -3.5, "is_home": False},
+        {"team": "TB", "opponent": "NO", "matchup": "TB @ NO", "spread": -3.5, "is_home": False},
+        {"team": "IND", "opponent": "TEN", "matchup": "IND @ TEN", "spread": -2.5, "is_home": False},
     ],
     7: [
         {"team": "LAR", "opponent": "LV", "matchup": "LAR @ LV", "spread": -8.5, "is_home": False},
@@ -116,6 +183,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "HOU", "opponent": "NYG", "matchup": "NYG @ HOU", "spread": -6.0, "is_home": True},
         {"team": "SF", "opponent": "ATL", "matchup": "SF @ ATL", "spread": -4.5, "is_home": False},
         {"team": "BAL", "opponent": "CIN", "matchup": "CIN @ BAL", "spread": -4.0, "is_home": True},
+        {"team": "WAS", "opponent": "CAR", "matchup": "CAR @ WAS", "spread": -9.5, "is_home": True},
+        {"team": "BUF", "opponent": "TEN", "matchup": "TEN @ BUF", "spread": -8.5, "is_home": True},
+        {"team": "KC", "opponent": "SF", "matchup": "KC @ SF", "spread": -4.5, "is_home": False},
+        {"team": "PHI", "opponent": "NYG", "matchup": "PHI @ NYG", "spread": -4.0, "is_home": False},
+        {"team": "CIN", "opponent": "CLE", "matchup": "CIN @ CLE", "spread": -4.0, "is_home": False},
+        {"team": "GB", "opponent": "HOU", "matchup": "HOU @ GB", "spread": -3.5, "is_home": True},
+        {"team": "DET", "opponent": "MIN", "matchup": "DET @ MIN", "spread": -3.0, "is_home": False},
+        {"team": "JAX", "opponent": "NE", "matchup": "NE @ JAX", "spread": -3.5, "is_home": True},
+        {"team": "MIA", "opponent": "IND", "matchup": "MIA @ IND", "spread": -3.0, "is_home": False},
+        {"team": "LAC", "opponent": "ARI", "matchup": "LAC @ ARI", "spread": -3.0, "is_home": False},
+        {"team": "NO", "opponent": "DEN", "matchup": "DEN @ NO", "spread": -2.5, "is_home": True},
     ],
     8: [
         {"team": "DAL", "opponent": "ARI", "matchup": "ARI @ DAL", "spread": -10.5, "is_home": True},
@@ -123,6 +201,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "CIN", "opponent": "TEN", "matchup": "TEN @ CIN", "spread": -7.0, "is_home": True},
         {"team": "NE", "opponent": "MIA", "matchup": "NE @ MIA", "spread": -7.0, "is_home": False},
         {"team": "PIT", "opponent": "CLE", "matchup": "CLE @ PIT", "spread": -6.0, "is_home": True},
+        {"team": "DEN", "opponent": "CAR", "matchup": "CAR @ DEN", "spread": -10.5, "is_home": True},
+        {"team": "DET", "opponent": "TEN", "matchup": "TEN @ DET", "spread": -10.0, "is_home": True},
+        {"team": "KC", "opponent": "LV", "matchup": "KC @ LV", "spread": -8.5, "is_home": False},
+        {"team": "BAL", "opponent": "CLE", "matchup": "BAL @ CLE", "spread": -7.5, "is_home": False},
+        {"team": "LAC", "opponent": "NO", "matchup": "NO @ LAC", "spread": -6.5, "is_home": True},
+        {"team": "BUF", "opponent": "SEA", "matchup": "BUF @ SEA", "spread": -4.0, "is_home": False},
+        {"team": "HOU", "opponent": "IND", "matchup": "IND @ HOU", "spread": -4.5, "is_home": True},
+        {"team": "PHI", "opponent": "CIN", "matchup": "PHI @ CIN", "spread": -3.5, "is_home": False},
+        {"team": "SF", "opponent": "DAL", "matchup": "DAL @ SF", "spread": -4.0, "is_home": True},
+        {"team": "MIN", "opponent": "LAR", "matchup": "MIN @ LAR", "spread": -3.0, "is_home": False},
+        {"team": "MIA", "opponent": "ARI", "matchup": "ARI @ MIA", "spread": -3.5, "is_home": True},
     ],
     9: [
         {"team": "SEA", "opponent": "ARI", "matchup": "ARI @ SEA", "spread": -13.5, "is_home": True},
@@ -130,6 +219,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "SF", "opponent": "LV", "matchup": "LV @ SF", "spread": -9.5, "is_home": True},
         {"team": "DET", "opponent": "MIA", "matchup": "DET @ MIA", "spread": -6.5, "is_home": False},
         {"team": "PHI", "opponent": "NYG", "matchup": "NYG @ PHI", "spread": -6.0, "is_home": True},
+        {"team": "BAL", "opponent": "DEN", "matchup": "DEN @ BAL", "spread": -8.5, "is_home": True},
+        {"team": "CIN", "opponent": "LV", "matchup": "LV @ CIN", "spread": -7.5, "is_home": True},
+        {"team": "LAC", "opponent": "CLE", "matchup": "LAC @ CLE", "spread": -4.5, "is_home": False},
+        {"team": "BUF", "opponent": "MIA", "matchup": "MIA @ BUF", "spread": -5.5, "is_home": True},
+        {"team": "MIN", "opponent": "IND", "matchup": "IND @ MIN", "spread": -4.5, "is_home": True},
+        {"team": "WAS", "opponent": "NYG", "matchup": "WAS @ NYG", "spread": -3.5, "is_home": False},
+        {"team": "ATL", "opponent": "DAL", "matchup": "DAL @ ATL", "spread": -3.0, "is_home": True},
+        {"team": "NO", "opponent": "CAR", "matchup": "NO @ CAR", "spread": -4.0, "is_home": False},
+        {"team": "CHI", "opponent": "ARI", "matchup": "CHI @ ARI", "spread": -3.0, "is_home": False},
+        {"team": "LAR", "opponent": "SEA", "matchup": "LAR @ SEA", "spread": -3.0, "is_home": False},
+        {"team": "GB", "opponent": "DET", "matchup": "DET @ GB", "spread": -3.0, "is_home": True},
     ],
     10: [
         {"team": "LAR", "opponent": "ARI", "matchup": "LAR @ ARI", "spread": -10.5, "is_home": False},
@@ -137,6 +237,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "BUF", "opponent": "NYJ", "matchup": "BUF @ NYJ", "spread": -7.0, "is_home": False},
         {"team": "SEA", "opponent": "LV", "matchup": "SEA @ LV", "spread": -7.0, "is_home": False},
         {"team": "GB", "opponent": "MIN", "matchup": "MIN @ GB", "spread": -4.5, "is_home": True},
+        {"team": "LAC", "opponent": "TEN", "matchup": "TEN @ LAC", "spread": -7.5, "is_home": True},
+        {"team": "KC", "opponent": "DEN", "matchup": "DEN @ KC", "spread": -7.5, "is_home": True},
+        {"team": "PHI", "opponent": "DAL", "matchup": "PHI @ DAL", "spread": -6.5, "is_home": False},
+        {"team": "DET", "opponent": "HOU", "matchup": "DET @ HOU", "spread": -4.5, "is_home": False},
+        {"team": "SF", "opponent": "TB", "matchup": "SF @ TB", "spread": -4.5, "is_home": False},
+        {"team": "BAL", "opponent": "CIN", "matchup": "CIN @ BAL", "spread": -5.5, "is_home": True},
+        {"team": "CHI", "opponent": "NE", "matchup": "NE @ CHI", "spread": -5.5, "is_home": True},
+        {"team": "ATL", "opponent": "NO", "matchup": "ATL @ NO", "spread": -3.5, "is_home": False},
+        {"team": "PIT", "opponent": "WAS", "matchup": "PIT @ WAS", "spread": -3.0, "is_home": False},
+        {"team": "NYG", "opponent": "CAR", "matchup": "NYG @ CAR", "spread": -3.0, "is_home": False},
+        {"team": "MIN", "opponent": "JAX", "matchup": "MIN @ JAX", "spread": -4.0, "is_home": False},
     ],
     11: [
         {"team": "BUF", "opponent": "MIA", "matchup": "MIA @ BUF", "spread": -12.5, "is_home": True},
@@ -144,6 +255,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "LAC", "opponent": "NYJ", "matchup": "NYJ @ LAC", "spread": -10.5, "is_home": True},
         {"team": "DEN", "opponent": "LV", "matchup": "LV @ DEN", "spread": -8.5, "is_home": True},
         {"team": "DAL", "opponent": "TEN", "matchup": "TEN @ DAL", "spread": -7.0, "is_home": True},
+        {"team": "DET", "opponent": "JAX", "matchup": "JAX @ DET", "spread": -11.5, "is_home": True},
+        {"team": "MIA", "opponent": "LV", "matchup": "LV @ MIA", "spread": -7.0, "is_home": True},
+        {"team": "HOU", "opponent": "DAL", "matchup": "HOU @ DAL", "spread": -6.5, "is_home": False},
+        {"team": "SF", "opponent": "SEA", "matchup": "SEA @ SF", "spread": -5.5, "is_home": True},
+        {"team": "GB", "opponent": "CHI", "matchup": "GB @ CHI", "spread": -5.5, "is_home": False},
+        {"team": "BAL", "opponent": "PIT", "matchup": "BAL @ PIT", "spread": -3.5, "is_home": False},
+        {"team": "MIN", "opponent": "TEN", "matchup": "MIN @ TEN", "spread": -5.0, "is_home": False},
+        {"team": "LAR", "opponent": "NE", "matchup": "LAR @ NE", "spread": -4.5, "is_home": False},
+        {"team": "NO", "opponent": "CLE", "matchup": "CLE @ NO", "spread": -3.0, "is_home": True},
+        {"team": "NYJ", "opponent": "IND", "matchup": "IND @ NYJ", "spread": -3.5, "is_home": True},
+        {"team": "ATL", "opponent": "DEN", "matchup": "ATL @ DEN", "spread": -3.0, "is_home": False},
     ],
     12: [
         {"team": "CIN", "opponent": "NO", "matchup": "NO @ CIN", "spread": -6.5, "is_home": True},
@@ -151,6 +273,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "LAR", "opponent": "GB", "matchup": "GB @ LAR", "spread": -5.5, "is_home": True},
         {"team": "MIN", "opponent": "ATL", "matchup": "ATL @ MIN", "spread": -4.5, "is_home": True},
         {"team": "TB", "opponent": "CAR", "matchup": "CAR @ TB", "spread": -4.5, "is_home": True},
+        {"team": "KC", "opponent": "CAR", "matchup": "KC @ CAR", "spread": -9.5, "is_home": False},
+        {"team": "WAS", "opponent": "DAL", "matchup": "DAL @ WAS", "spread": -9.0, "is_home": True},
+        {"team": "HOU", "opponent": "TEN", "matchup": "TEN @ HOU", "spread": -7.5, "is_home": True},
+        {"team": "DET", "opponent": "IND", "matchup": "DET @ IND", "spread": -7.0, "is_home": False},
+        {"team": "MIA", "opponent": "NE", "matchup": "NE @ MIA", "spread": -6.5, "is_home": True},
+        {"team": "BAL", "opponent": "LAC", "matchup": "BAL @ LAC", "spread": -3.5, "is_home": False},
+        {"team": "PHI", "opponent": "LAR", "matchup": "PHI @ LAR", "spread": -3.5, "is_home": False},
+        {"team": "CHI", "opponent": "MIN", "matchup": "MIN @ CHI", "spread": -3.0, "is_home": True},
+        {"team": "PIT", "opponent": "CLE", "matchup": "PIT @ CLE", "spread": -3.5, "is_home": False},
+        {"team": "SF", "opponent": "GB", "matchup": "SF @ GB", "spread": -3.0, "is_home": False},
+        {"team": "SEA", "opponent": "ARI", "matchup": "ARI @ SEA", "spread": -4.0, "is_home": True},
     ],
     13: [
         {"team": "DEN", "opponent": "MIA", "matchup": "MIA @ DEN", "spread": -9.5, "is_home": True},
@@ -158,6 +291,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "LAR", "opponent": "KC", "matchup": "KC @ LAR", "spread": -5.0, "is_home": True},
         {"team": "SEA", "opponent": "DAL", "matchup": "DAL @ SEA", "spread": -4.5, "is_home": True},
         {"team": "CIN", "opponent": "CLE", "matchup": "CIN @ CLE", "spread": -4.5, "is_home": False},
+        {"team": "KC", "opponent": "LV", "matchup": "LV @ KC", "spread": -11.5, "is_home": True},
+        {"team": "DET", "opponent": "CHI", "matchup": "CHI @ DET", "spread": -9.0, "is_home": True},
+        {"team": "DAL", "opponent": "NYG", "matchup": "NYG @ DAL", "spread": -6.0, "is_home": True},
+        {"team": "BUF", "opponent": "SF", "matchup": "SF @ BUF", "spread": -6.0, "is_home": True},
+        {"team": "WAS", "opponent": "TEN", "matchup": "TEN @ WAS", "spread": -5.5, "is_home": True},
+        {"team": "BAL", "opponent": "PHI", "matchup": "PHI @ BAL", "spread": -3.5, "is_home": True},
+        {"team": "MIN", "opponent": "ARI", "matchup": "ARI @ MIN", "spread": -4.5, "is_home": True},
+        {"team": "TB", "opponent": "CAR", "matchup": "TB @ CAR", "spread": -4.5, "is_home": False},
+        {"team": "GB", "opponent": "MIA", "matchup": "MIA @ GB", "spread": -3.5, "is_home": True},
+        {"team": "LAC", "opponent": "ATL", "matchup": "LAC @ ATL", "spread": -3.0, "is_home": False},
+        {"team": "NYJ", "opponent": "SEA", "matchup": "SEA @ NYJ", "spread": -3.0, "is_home": True},
     ],
     14: [
         {"team": "DET", "opponent": "TEN", "matchup": "TEN @ DET", "spread": -7.5, "is_home": True},
@@ -165,27 +309,71 @@ BASELINE_SEASON_SLATES = {
         {"team": "BAL", "opponent": "TB", "matchup": "TB @ BAL", "spread": -6.0, "is_home": True},
         {"team": "NE", "opponent": "MIN", "matchup": "MIN @ NE", "spread": -5.5, "is_home": True},
         {"team": "PHI", "opponent": "IND", "matchup": "IND @ PHI", "spread": -5.5, "is_home": True},
+        {"team": "PHI", "opponent": "CAR", "matchup": "CAR @ PHI", "spread": -11.5, "is_home": True},
+        {"team": "TB", "opponent": "LV", "matchup": "LV @ TB", "spread": -6.5, "is_home": True},
+        {"team": "MIA", "opponent": "NYJ", "matchup": "NYJ @ MIA", "spread": -6.0, "is_home": True},
+        {"team": "KC", "opponent": "LAC", "matchup": "LAC @ KC", "spread": -5.5, "is_home": True},
+        {"team": "SF", "opponent": "CHI", "matchup": "CHI @ SF", "spread": -5.0, "is_home": True},
+        {"team": "MIN", "opponent": "ATL", "matchup": "ATL @ MIN", "spread": -5.0, "is_home": True},
+        {"team": "PIT", "opponent": "CLE", "matchup": "CLE @ PIT", "spread": -5.0, "is_home": True},
+        {"team": "LAR", "opponent": "BUF", "matchup": "BUF @ LAR", "spread": -3.5, "is_home": True},
+        {"team": "CIN", "opponent": "DAL", "matchup": "CIN @ DAL", "spread": -3.5, "is_home": False},
+        {"team": "GB", "opponent": "DET", "matchup": "GB @ DET", "spread": -3.5, "is_home": False},
+        {"team": "JAX", "opponent": "TEN", "matchup": "JAX @ TEN", "spread": -3.0, "is_home": False},
     ],
     15: [
         {"team": "GB", "opponent": "MIA", "matchup": "MIA @ GB", "spread": -10.5, "is_home": True},
+        {"team": "BUF", "opponent": "CHI", "matchup": "CHI @ BUF", "spread": -10.0, "is_home": True},
         {"team": "LAR", "opponent": "DAL", "matchup": "DAL @ LAR", "spread": -7.5, "is_home": True},
         {"team": "NYG", "opponent": "CLE", "matchup": "CLE @ NYG", "spread": -4.5, "is_home": True},
         {"team": "DEN", "opponent": "LV", "matchup": "DEN @ LV", "spread": -4.5, "is_home": False},
-        {"team": "BUF", "opponent": "CHI", "matchup": "CHI @ BUF", "spread": -4.0, "is_home": True},
+        {"team": "BAL", "opponent": "NYG", "matchup": "BAL @ NYG", "spread": -11.5, "is_home": False},
+        {"team": "WAS", "opponent": "NO", "matchup": "WAS @ NO", "spread": -6.5, "is_home": False},
+        {"team": "MIN", "opponent": "CHI", "matchup": "CHI @ MIN", "spread": -6.0, "is_home": True},
+        {"team": "ARI", "opponent": "NE", "matchup": "NE @ ARI", "spread": -5.5, "is_home": True},
+        {"team": "ATL", "opponent": "LV", "matchup": "ATL @ LV", "spread": -5.0, "is_home": False},
+        {"team": "KC", "opponent": "CLE", "matchup": "KC @ CLE", "spread": -4.5, "is_home": False},
+        {"team": "PHI", "opponent": "PIT", "matchup": "PIT @ PHI", "spread": -4.5, "is_home": True},
+        {"team": "SF", "opponent": "LAR", "matchup": "SF @ LAR", "spread": -4.0, "is_home": False},
+        {"team": "DET", "opponent": "BUF", "matchup": "BUF @ DET", "spread": -3.5, "is_home": True},
+        {"team": "CIN", "opponent": "TEN", "matchup": "CIN @ TEN", "spread": -3.5, "is_home": False},
+        {"team": "LAC", "opponent": "TB", "matchup": "TB @ LAC", "spread": -3.0, "is_home": True},
     ],
     16: [
         {"team": "BAL", "opponent": "CLE", "matchup": "CLE @ BAL", "spread": -10.5, "is_home": True},
+        {"team": "NE", "opponent": "NYJ", "matchup": "NE @ NYJ", "spread": -10.5, "is_home": False},
         {"team": "LAC", "opponent": "MIA", "matchup": "LAC @ MIA", "spread": -7.0, "is_home": False},
         {"team": "DET", "opponent": "NYG", "matchup": "NYG @ DET", "spread": -6.5, "is_home": True},
-        {"team": "NE", "opponent": "NYJ", "matchup": "NE @ NYJ", "spread": -6.5, "is_home": False},
         {"team": "NO", "opponent": "ARI", "matchup": "ARI @ NO", "spread": -5.5, "is_home": True},
+        {"team": "BUF", "opponent": "NE", "matchup": "NE @ BUF", "spread": -11.0, "is_home": True},
+        {"team": "GB", "opponent": "NO", "matchup": "NO @ GB", "spread": -10.5, "is_home": True},
+        {"team": "CIN", "opponent": "CLE", "matchup": "CLE @ CIN", "spread": -8.5, "is_home": True},
+        {"team": "ATL", "opponent": "NYG", "matchup": "NYG @ ATL", "spread": -7.5, "is_home": True},
+        {"team": "PHI", "opponent": "WAS", "matchup": "PHI @ WAS", "spread": -5.5, "is_home": False},
+        {"team": "KC", "opponent": "HOU", "matchup": "HOU @ KC", "spread": -5.0, "is_home": True},
+        {"team": "DEN", "opponent": "LAC", "matchup": "DEN @ LAC", "spread": -3.5, "is_home": False},
+        {"team": "LAR", "opponent": "NYJ", "matchup": "LAR @ NYJ", "spread": -4.0, "is_home": False},
+        {"team": "WAS", "opponent": "PHI", "matchup": "PHI @ WAS", "spread": -3.0, "is_home": True},
+        {"team": "MIN", "opponent": "SEA", "matchup": "MIN @ SEA", "spread": -3.0, "is_home": False},
+        {"team": "CHI", "opponent": "DET", "matchup": "DET @ CHI", "spread": -3.0, "is_home": True},
     ],
     17: [
-        {"team": "BUF", "opponent": "MIA", "matchup": "BUF @ MIA", "spread": -7.5, "is_home": False},
+        {"team": "BUF", "opponent": "MIA", "matchup": "BUF @ MIA", "spread": -10.0, "is_home": False},
         {"team": "DAL", "opponent": "NYG", "matchup": "NYG @ DAL", "spread": -5.5, "is_home": True},
         {"team": "SEA", "opponent": "CAR", "matchup": "SEA @ CAR", "spread": -5.5, "is_home": False},
         {"team": "LAR", "opponent": "TB", "matchup": "LAR @ TB", "spread": -4.5, "is_home": False},
         {"team": "JAX", "opponent": "WAS", "matchup": "WAS @ JAX", "spread": -3.5, "is_home": True},
+        {"team": "TB", "opponent": "CAR", "matchup": "CAR @ TB", "spread": -8.5, "is_home": True},
+        {"team": "PHI", "opponent": "DAL", "matchup": "DAL @ PHI", "spread": -6.5, "is_home": True},
+        {"team": "KC", "opponent": "PIT", "matchup": "KC @ PIT", "spread": -5.0, "is_home": False},
+        {"team": "BAL", "opponent": "HOU", "matchup": "BAL @ HOU", "spread": -4.5, "is_home": False},
+        {"team": "CIN", "opponent": "DEN", "matchup": "DEN @ CIN", "spread": -4.0, "is_home": True},
+        {"team": "MIN", "opponent": "GB", "matchup": "GB @ MIN", "spread": -4.0, "is_home": True},
+        {"team": "DET", "opponent": "SF", "matchup": "DET @ SF", "spread": -3.5, "is_home": False},
+        {"team": "IND", "opponent": "NYG", "matchup": "IND @ NYG", "spread": -5.0, "is_home": False},
+        {"team": "WAS", "opponent": "ATL", "matchup": "ATL @ WAS", "spread": -3.5, "is_home": True},
+        {"team": "GB", "opponent": "MIN", "matchup": "GB @ MIN", "spread": -3.0, "is_home": False},
+        {"team": "CHI", "opponent": "SEA", "matchup": "SEA @ CHI", "spread": -3.0, "is_home": True},
     ],
     18: [
         {"team": "NE", "opponent": "MIA", "matchup": "MIA @ NE", "spread": -10.5, "is_home": True},
@@ -193,6 +381,17 @@ BASELINE_SEASON_SLATES = {
         {"team": "KC", "opponent": "LV", "matchup": "LV @ KC", "spread": -8.5, "is_home": True},
         {"team": "SF", "opponent": "ARI", "matchup": "SF @ ARI", "spread": -8.5, "is_home": False},
         {"team": "CIN", "opponent": "CLE", "matchup": "CLE @ CIN", "spread": -7.5, "is_home": True},
+        {"team": "BAL", "opponent": "CLE", "matchup": "CLE @ BAL", "spread": -12.5, "is_home": True},
+        {"team": "TB", "opponent": "NO", "matchup": "NO @ TB", "spread": -9.5, "is_home": True},
+        {"team": "DEN", "opponent": "KC", "matchup": "KC @ DEN", "spread": -6.5, "is_home": True},
+        {"team": "GB", "opponent": "CHI", "matchup": "CHI @ GB", "spread": -6.5, "is_home": True},
+        {"team": "ATL", "opponent": "CAR", "matchup": "CAR @ ATL", "spread": -5.5, "is_home": True},
+        {"team": "DET", "opponent": "MIN", "matchup": "MIN @ DET", "spread": -4.5, "is_home": True},
+        {"team": "PHI", "opponent": "NYG", "matchup": "NYG @ PHI", "spread": -5.0, "is_home": True},
+        {"team": "LAR", "opponent": "SEA", "matchup": "SEA @ LAR", "spread": -4.0, "is_home": True},
+        {"team": "HOU", "opponent": "TEN", "matchup": "HOU @ TEN", "spread": -4.0, "is_home": False},
+        {"team": "JAX", "opponent": "IND", "matchup": "IND @ JAX", "spread": -3.5, "is_home": True},
+        {"team": "WAS", "opponent": "DAL", "matchup": "DAL @ WAS", "spread": -3.0, "is_home": True},
     ],
 }
 
@@ -286,10 +485,6 @@ def fetch_espn_live_odds(week: int):
     return espn_odds
 
 def read_existing_lines_from_sheet(sheet_data):
-    """
-    Parses Column E (Team), Column F (Matchup), and Column G (Line) from the existing
-    sheet data so that prior verified spreads are never lost when live APIs lack data.
-    """
     existing_lines = {}
     if not sheet_data or len(sheet_data) < 2:
         return existing_lines
@@ -308,19 +503,13 @@ def read_existing_lines_from_sheet(sheet_data):
                 pass
     return existing_lines
 
-def build_slates_with_persistent_fallback(live_odds_map, sheet_existing_lines):
-    """
-    1. Check live online bookmaker odds.
-    2. Fallback to the existing line recorded on the spreadsheet.
-    3. Fallback to baseline opening season line.
-    Only overwrites if a new valid line is found.
-    """
+def build_full_season_slates(live_odds_map, sheet_existing_lines):
     all_slates = {}
     for w in range(1, WEEKS + 1):
         espn_odds = fetch_espn_live_odds(w)
         all_slates[w] = []
 
-        baseline_games = BASELINE_SEASON_SLATES.get(w, [])
+        baseline_games = FULL_SEASON_BASELINE.get(w, [])
         for game in baseline_games:
             team = game["team"]
             opp = game["opponent"]
@@ -330,7 +519,7 @@ def build_slates_with_persistent_fallback(live_odds_map, sheet_existing_lines):
 
             chosen_spread = None
 
-            # Priority 1: Check Live Online Odds
+            # 1. Live online odds
             if (h, a) in live_odds_map:
                 h_spread = live_odds_map[(h, a)]
                 chosen_spread = h_spread if is_home else -h_spread
@@ -338,11 +527,11 @@ def build_slates_with_persistent_fallback(live_odds_map, sheet_existing_lines):
                 h_spread = espn_odds[(h, a)]
                 chosen_spread = h_spread if is_home else -h_spread
 
-            # Priority 2: Retain the Existing Line Recorded on the Sheet
+            # 2. Existing persistent sheet line
             if chosen_spread is None and team in sheet_existing_lines:
                 chosen_spread = sheet_existing_lines[team]
 
-            # Priority 3: Fall back to Baseline Opening Season Line
+            # 3. Full-slate baseline line
             if chosen_spread is None:
                 chosen_spread = game["spread"]
 
@@ -366,7 +555,7 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
     used_teams = set()
     optimal = {w: [] for w in range(1, WEEKS + 1)}
 
-    # Pre-seed locked user picks
+    # Pre-seed user locked picks
     for w in range(1, WEEKS + 1):
         for t in locked_picks.get(w, []):
             used_teams.add(t)
@@ -464,7 +653,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         if curr_act and curr_act != prev_act:
             newly_locked.append(f"Wk {w}: Locked {curr_act}")
 
-    trigger_description = "; ".join(newly_locked) if newly_locked else "Live Odds Search / Persistent Sync"
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Full Slate Re-optimization"
     log_rows = []
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
@@ -474,7 +663,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         new_rec = current_picks.get(w, "")
 
         if old_rec and new_rec and old_rec != new_rec:
-            reason = "Rerouted due to User Pick" if newly_locked else "Line movement / EV shift"
+            reason = "Rerouted due to User Pick" if newly_locked else "Double-pick portfolio rebalancing"
             log_rows.append([
                 timestamp_str, trigger_description, f"Week {w}", old_rec, new_rec, survival_shift_str, reason
             ])
@@ -499,7 +688,6 @@ def sync_to_google_sheets():
     spreadsheet = client.open(SHEET_TITLE)
     sheet = spreadsheet.worksheet(TAB_NAME)
 
-    # 1. READ EXISTING DATA PRIOR TO ANY MODIFICATIONS
     existing_data = sheet.get_all_values()
     locked_picks = {}
     previous_picks = {}
@@ -525,22 +713,20 @@ def sync_to_google_sheets():
             except ValueError:
                 pass
 
-    # Extract all currently recorded lines to serve as persistent fallback
     sheet_existing_lines = read_existing_lines_from_sheet(existing_data)
     print(f"Preserved {len(sheet_existing_lines)} existing game lines from spreadsheet.")
     print(f"Detected user locked picks: {locked_picks}")
 
-    # 2. SEARCH ONLINE SOURCES FOR UPDATED ODDS
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
     print(f"Retrieved {len(live_odds_map)} updated live sportsbook lines.")
 
-    # 3. BUILD ALL 18 WEEKS (Search -> Sheet Fallback -> Baseline)
-    all_weekly_slates = build_slates_with_persistent_fallback(live_odds_map, sheet_existing_lines)
+    # 1. EVALUATE ALL MATCHUPS ACROSS THE ENTIRE NFL
+    all_weekly_slates = build_full_season_slates(live_odds_map, sheet_existing_lines)
 
-    # 4. SOLVE SURVIVOR SCHEDULE (22 Teams, Weeks 15-18 Double Picks)
+    # 2. RUN FORWARD OPTIMIZER (Guaranteed 22 distinct picks)
     optimal_picks_by_week, optimal_display = solve_survivor_path(all_weekly_slates, locked_picks)
 
-    # 5. COMPUTE CUMULATIVE SURVIVAL PROBABILITY
+    # 3. CALCULATE JOINT SURVIVAL PROBABILITY
     cum_prob = 1.0
     for w in range(1, WEEKS + 1):
         chosen_teams = locked_picks.get(w, []) if locked_picks.get(w) else optimal_picks_by_week.get(w, [])
@@ -561,9 +747,26 @@ def sync_to_google_sheets():
 
     new_prob = cum_prob * 100.0
 
-    # 6. WRITE CLEAN UPDATED MATRIX TO GOOGLE SHEETS
+    # 4. PREPARE CURATED DISPLAY (Top 5 + Any Selected Team Not in Top 5)
+    sheet_weekly_display = {}
+    total_display_rows = 1  # header row
+    for w in range(1, WEEKS + 1):
+        rec_teams = optimal_picks_by_week.get(w, [])
+        user_teams = locked_picks.get(w, [])
+        chosen_teams = list(set(rec_teams + user_teams))
+
+        top5 = all_weekly_slates.get(w, [])[:5]
+        top5_teams = {c["team"] for c in top5}
+
+        # Any pick outside top 5 is appended
+        outside_picks = [c for c in all_weekly_slates.get(w, []) if c["team"] in chosen_teams and c["team"] not in top5_teams]
+        curated_slate = top5 + outside_picks
+        sheet_weekly_display[w] = curated_slate
+        total_display_rows += (1 + len(curated_slate))  # header + items
+
+    # Clear and format grid
     sheet.clear()
-    total_grid_rows = 1 + (WEEKS * 6)
+    total_grid_rows = max(total_display_rows + 10, 1 + (WEEKS * 7))
 
     sheet.format(f"A1:I{total_grid_rows + 20}", {
         "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
@@ -598,33 +801,37 @@ def sync_to_google_sheets():
     yellow_rows = []
     merge_ranges = []
 
+    current_start_row = 2
     for w in range(1, WEEKS + 1):
         rec_teams = optimal_picks_by_week.get(w, [])
-        cands = all_weekly_slates.get(w, [])[:5]
-        block_start_row = 1 + (w - 1) * 6 + 1
+        user_teams = locked_picks.get(w, [])
+        chosen_set = set(rec_teams + user_teams)
+
+        cands = sheet_weekly_display.get(w, [])
+        block_header_row = current_start_row
 
         label_suffix = " (DOUBLE PICK ROUND)" if w in DOUBLE_PICK_WEEKS else ""
-        matrix[block_start_row - 1][4] = f"Top candidates for Week {w}{label_suffix}"
-        merge_ranges.append(f"E{block_start_row}:I{block_start_row}")
+        matrix[block_header_row - 1][4] = f"Top candidates for Week {w}{label_suffix}"
+        merge_ranges.append(f"E{block_header_row}:I{block_header_row}")
 
-        for i in range(5):
-            cand_row_num = block_start_row + 1 + i
-            if i < len(cands):
-                cand = cands[i]
-                is_rec = cand["team"] in rec_teams
-                if is_rec:
-                    yellow_rows.append(cand_row_num)
+        for i, cand in enumerate(cands):
+            cand_row_num = block_header_row + 1 + i
+            is_chosen = cand["team"] in chosen_set
+            if is_chosen:
+                yellow_rows.append(cand_row_num)
 
-                team_display = f"**{cand['team']}**" if cand.get("is_home", False) else cand["team"]
-                spread_display = f"{cand['spread']:+.1f}" if cand["spread"] is not None else ""
-                m_prob_display = f"{cand['m_prob'] * 100:.1f}%" if cand["m_prob"] is not None else ""
-                mod_prob_display = f"{cand['mod_prob'] * 100:.1f}%" if cand["mod_prob"] is not None else ""
+            team_display = f"**{cand['team']}**" if cand.get("is_home", False) else cand["team"]
+            spread_display = f"{cand['spread']:+.1f}" if cand["spread"] is not None else ""
+            m_prob_display = f"{cand['m_prob'] * 100:.1f}%" if cand["m_prob"] is not None else ""
+            mod_prob_display = f"{cand['mod_prob'] * 100:.1f}%" if cand["mod_prob"] is not None else ""
 
-                matrix[cand_row_num - 1][4] = team_display
-                matrix[cand_row_num - 1][5] = cand.get("matchup", "")
-                matrix[cand_row_num - 1][6] = spread_display
-                matrix[cand_row_num - 1][7] = m_prob_display
-                matrix[cand_row_num - 1][8] = mod_prob_display
+            matrix[cand_row_num - 1][4] = team_display
+            matrix[cand_row_num - 1][5] = cand.get("matchup", "")
+            matrix[cand_row_num - 1][6] = spread_display
+            matrix[cand_row_num - 1][7] = m_prob_display
+            matrix[cand_row_num - 1][8] = mod_prob_display
+
+        current_start_row = block_header_row + 1 + len(cands)
 
     sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
 
@@ -678,7 +885,7 @@ def sync_to_google_sheets():
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
 
-    print("Success: Google Sheet updated cleanly with search-first persistent line hierarchy.")
+    print("Success: Google Sheet updated cleanly with full-slate solver and curated display.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
