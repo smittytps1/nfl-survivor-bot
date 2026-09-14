@@ -68,12 +68,12 @@ DIVISIONS = {
 
 # --- 2026 POWER RATINGS FOR AUTO-POPULATION ---
 POWER_RATINGS = {
-    "KC": 6.5, "SF": 6.5, "BAL": 6.0, "BUF": 5.5, "DET": 5.5, "CIN": 5.0, 
-    "PHI": 4.5, "GB": 4.0, "HOU": 4.0, "CHI": 3.5, "NYJ": 3.0, "DAL": 2.5, 
-    "MIA": 2.0, "LAR": 1.5, "ATL": 1.0, "JAX": 1.0, "SEA": 0.5, "MIN": 0.5, 
-    "PIT": 0.0, "TB": 0.0, "LAC": -1.0, "IND": -1.0, "NYG": -1.5, "LV": -1.5, 
-    "WAS": -2.0, "ARI": -2.0, "NO": -2.5, "TEN": -3.5, "NE": -4.0, "CLE": -4.5, 
-    "DEN": -5.0, "CAR": -6.0
+    "LAR": 6.5, "SEA": 6.0, "BUF": 5.5, "HOU": 5.0, "DEN": 4.5, "NE": 4.0, 
+    "PHI": 3.5, "LAC": 3.0, "KC": 2.5, "SF": 2.5, "BAL": 2.0, "DET": 2.0, 
+    "CIN": 1.5, "GB": 1.0, "DAL": 0.5, "CHI": 0.5, "PIT": 0.0, "TB": 0.0, 
+    "JAX": -0.5, "MIN": -1.0, "IND": -1.5, "WAS": -2.0, "NYG": -2.5, "NO": -2.5, 
+    "ATL": -3.0, "LV": -3.5, "TEN": -4.0, "CLE": -4.5, "NYJ": -5.0, "ARI": -5.5, 
+    "CAR": -6.0, "MIA": -6.5
 }
 
 ALL_TEAMS = sorted(list(set(NAME_TO_ABBR.values())))
@@ -133,7 +133,7 @@ def fetch_dynamic_schedule():
                             "away_team": a_abbr
                         })
     except Exception as e:
-        print(f"Notice on nflverse schedule fetch: {e}")
+        print(f"Notice on dynamic schedule fetch: {e}")
     return schedule_by_week
 
 def fetch_online_sportsbook_odds(api_key: str):
@@ -234,10 +234,11 @@ def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, al
             elif (h, a) in all_espn_odds:
                 chosen_spread = all_espn_odds[(h, a)]
                 source = "Live (ESPN)"
-            elif (w, h, a) in existing_lines and existing_lines[(w, h, a)]["source"] not in ["Default Baseline"]:
+            elif (w, h, a) in existing_lines and existing_lines[(w, h, a)]["source"] not in ["Default Baseline", "Power Rating Alg"]:
                 chosen_spread = existing_lines[(w, h, a)]["line"]
-                source = "Persistent (Lines Tab)"
+                source = existing_lines[(w, h, a)]["source"]
             else:
+                # Dynamically calculate line using corrected Power Ratings
                 h_pr = POWER_RATINGS.get(h, 0.0)
                 a_pr = POWER_RATINGS.get(a, 0.0)
                 chosen_spread = round(a_pr - h_pr - 2.0, 1)
@@ -301,7 +302,6 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
     used_teams = set()
     optimal = {w: [] for w in range(1, WEEKS + 1)}
 
-    # Pre-seed user locked picks
     for w in range(1, WEEKS + 1):
         for t in locked_picks.get(w, []):
             used_teams.add(t)
@@ -341,14 +341,12 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
 
                 score = spread * 10.0
 
-                # PORTFOLIO BALANCING: Protect elite teams for late-season double-pick gauntlets
                 if w < 15:
                     score -= (future_heavy_spots * 7.5)
                     score -= (double_pick_anchors * 22.0)
                 else:
                     score -= (future_heavy_spots * 5.0)
 
-                # Avoid taking a team if they have a much softer matchup in the immediate next two weeks
                 better_spot_soon = any(
                     get_safe_abs_spread(fc) >= (spread + 1.5)
                     for fw in [w + 1, w + 2] if fw <= WEEKS
@@ -359,17 +357,14 @@ def solve_survivor_path(all_weekly_slates, locked_picks):
                 if better_spot_soon:
                     score -= 25.0
 
-                # Penalize early-season divisional road games due to high variance
                 if w <= 6 and is_divisional_road_game(team, opp, is_home):
                     score -= 30.0
 
-                # Slight bump for home field comfort
                 if is_home:
                     score += 3.0
 
                 scored_cands.append((score, cand))
 
-            # Sort by highest computed heuristic score
             scored_cands.sort(key=lambda x: x[0], reverse=True)
             best_pick = scored_cands[0][1]["team"]
             optimal[w].append(best_pick)
@@ -401,7 +396,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         if curr_act and curr_act != prev_act:
             newly_locked.append(f"Wk {w}: Locked {curr_act}")
 
-    trigger_description = "; ".join(newly_locked) if newly_locked else "Portfolio Rebalancing"
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Power Ratings & Schedule Alignment"
     log_rows = []
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
@@ -420,6 +415,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         log_sheet.append_rows(log_rows, value_input_option="USER_ENTERED")
 
 def sync_to_google_sheets():
+    print("Connecting to Google Sheets...")
     creds_json = os.environ.get("GCP_SERVICE_ACCOUNT_JSON")
     odds_api_key = os.environ.get("ODDS_API_KEY", "")
 
@@ -460,6 +456,8 @@ def sync_to_google_sheets():
                 prev_prob = float(prob_raw)
             except ValueError:
                 pass
+
+    print(f"Detected locked user picks: {locked_picks}")
 
     schedule_2026 = fetch_dynamic_schedule()
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
@@ -622,7 +620,7 @@ def sync_to_google_sheets():
     log_adjustments_to_sheet(
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
-    print("Success: Full Season Lines Tab verified and main sheet updated.")
+    print("Success: Full Season Lines Tab updated with corrected PR engine.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
