@@ -238,7 +238,6 @@ def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, al
                 chosen_spread = existing_lines[(w, h, a)]["line"]
                 source = existing_lines[(w, h, a)]["source"]
             else:
-                # Dynamically calculate line using corrected Power Ratings
                 h_pr = POWER_RATINGS.get(h, 0.0)
                 a_pr = POWER_RATINGS.get(a, 0.0)
                 chosen_spread = round(a_pr - h_pr - 2.0, 1)
@@ -438,24 +437,29 @@ def sync_to_google_sheets():
     previous_actuals = {}
     prev_prob = None
 
+    # REWRITTEN: Safely read user picks regardless of row spacing
     if len(existing_data) > 1:
-        for w in range(1, WEEKS + 1):
-            row_idx = w + 1
-            if row_idx <= len(existing_data):
-                row = existing_data[row_idx - 1]
+        for row in existing_data[1:]:
+            if not row or len(row) < 1:
+                continue
+                
+            match = re.match(r"^Week\s+(\d+)", row[0].strip(), re.IGNORECASE)
+            if match:
+                w = int(match.group(1))
                 if len(row) >= 2 and row[1].strip():
                     previous_picks[w] = row[1].strip()
                 if len(row) >= 4 and row[3].strip():
                     cell_val = row[3].strip()
                     locked_picks[w] = parse_actual_picks(cell_val)
                     previous_actuals[w] = cell_val
-
-        if len(existing_data) >= 20 and len(existing_data[19]) >= 2:
-            prob_raw = existing_data[19][1].replace("%", "").strip()
-            try:
-                prev_prob = float(prob_raw)
-            except ValueError:
-                pass
+                    
+            if "Season Survival" in row[0]:
+                if len(row) >= 2:
+                    prob_raw = row[1].replace("%", "").strip()
+                    try:
+                        prev_prob = float(prob_raw)
+                    except ValueError:
+                        pass
 
     print(f"Detected locked user picks: {locked_picks}")
 
@@ -494,16 +498,24 @@ def sync_to_google_sheets():
         user_teams = locked_picks.get(w, [])
         chosen_teams = list(set(rec_teams + user_teams))
 
-        top5 = all_weekly_slates.get(w, [])[:5]
+        # NEW LOGIC: Filter out teams you officially burned in previous weeks
+        officially_taken_before = set()
+        for pw in range(1, w):
+            for t in locked_picks.get(pw, []):
+                officially_taken_before.add(t)
+
+        valid_cands = [c for c in all_weekly_slates.get(w, []) if c["team"] not in officially_taken_before]
+
+        top5 = valid_cands[:5]
         top5_teams = {c["team"] for c in top5}
 
-        outside_picks = [c for c in all_weekly_slates.get(w, []) if c["team"] in chosen_teams and c["team"] not in top5_teams]
+        outside_picks = [c for c in valid_cands if c["team"] in chosen_teams and c["team"] not in top5_teams]
         curated_slate = top5 + outside_picks
         sheet_weekly_display[w] = curated_slate
         total_display_rows += (1 + len(curated_slate))
 
     sheet.clear()
-    total_grid_rows = max(total_display_rows + 10, 1 + (WEEKS * 7))
+    total_grid_rows = total_display_rows + 5 
 
     sheet.format(f"A1:I{total_grid_rows + 20}", {
         "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
@@ -523,36 +535,32 @@ def sync_to_google_sheets():
     matrix = [["" for _ in range(9)] for _ in range(total_grid_rows + 2)]
     matrix[0] = headers
 
-    for w in range(1, WEEKS + 1):
-        r_idx = w
-        rec_display = optimal_display.get(w, "")
-        user_actual_str = previous_actuals.get(w, "")
-        matrix[r_idx][0] = f"Week {w} (2 Picks)" if w in DOUBLE_PICK_WEEKS else f"Week {w}"
-        matrix[r_idx][1] = rec_display
-        matrix[r_idx][2] = ""
-        matrix[r_idx][3] = user_actual_str
-
-    matrix[19][0] = "🏆 Season Survival"
-    matrix[19][1] = f"{new_prob:.2f}%"
-
     yellow_rows = []
     merge_ranges = []
 
     current_start_row = 2
     for w in range(1, WEEKS + 1):
+        rec_display = optimal_display.get(w, "")
+        user_actual_str = previous_actuals.get(w, "")
+        
+        # STRUCTURAL ALIGNMENT: Lock the left column precisely to the start of its candidate block on the right
+        matrix[current_start_row - 1][0] = f"Week {w} (2 Picks)" if w in DOUBLE_PICK_WEEKS else f"Week {w}"
+        matrix[current_start_row - 1][1] = rec_display
+        matrix[current_start_row - 1][2] = ""
+        matrix[current_start_row - 1][3] = user_actual_str
+
         rec_teams = optimal_picks_by_week.get(w, [])
         user_teams = locked_picks.get(w, [])
         chosen_set = set(rec_teams + user_teams)
 
         cands = sheet_weekly_display.get(w, [])
-        block_header_row = current_start_row
 
         label_suffix = " (DOUBLE PICK ROUND)" if w in DOUBLE_PICK_WEEKS else ""
-        matrix[block_header_row - 1][4] = f"Top candidates for Week {w}{label_suffix}"
-        merge_ranges.append(f"E{block_header_row}:I{block_header_row}")
+        matrix[current_start_row - 1][4] = f"Top candidates for Week {w}{label_suffix}"
+        merge_ranges.append(f"E{current_start_row}:I{current_start_row}")
 
         for i, cand in enumerate(cands):
-            cand_row_num = block_header_row + 1 + i
+            cand_row_num = current_start_row + 1 + i
             if cand["team"] in chosen_set:
                 yellow_rows.append(cand_row_num)
 
@@ -567,7 +575,11 @@ def sync_to_google_sheets():
             matrix[cand_row_num - 1][7] = m_prob_display
             matrix[cand_row_num - 1][8] = mod_prob_display
 
-        current_start_row = block_header_row + 1 + len(cands)
+        current_start_row += (1 + len(cands))
+
+    season_row = current_start_row + 1
+    matrix[season_row - 1][0] = "🏆 Season Survival"
+    matrix[season_row - 1][1] = f"{new_prob:.2f}%"
 
     sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
 
@@ -588,7 +600,7 @@ def sync_to_google_sheets():
     sheet.format(f"D2:D{total_grid_rows + 2}", {"horizontalAlignment": "CENTER", "textFormat": {"bold": True}})
     sheet.format(f"E2:I{total_grid_rows + 2}", {"horizontalAlignment": "CENTER"})
 
-    sheet.format("A20:B20", {
+    sheet.format(f"A{season_row}:B{season_row}", {
         "textFormat": {"bold": True, "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}},
         "backgroundColor": {"red": 0.12, "green": 0.34, "blue": 0.63},
         "horizontalAlignment": "CENTER"
@@ -620,7 +632,7 @@ def sync_to_google_sheets():
     log_adjustments_to_sheet(
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
-    print("Success: Full Season Lines Tab updated with corrected PR engine.")
+    print("Success: Structural alignment fixed and passed-week candidates filtered.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
