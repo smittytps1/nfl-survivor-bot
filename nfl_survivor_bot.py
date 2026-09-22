@@ -437,7 +437,6 @@ def sync_to_google_sheets():
     previous_actuals = {}
     prev_prob = None
 
-    # REWRITTEN: Safely read user picks regardless of row spacing
     if len(existing_data) > 1:
         for row in existing_data[1:]:
             if not row or len(row) < 1:
@@ -498,7 +497,6 @@ def sync_to_google_sheets():
         user_teams = locked_picks.get(w, [])
         chosen_teams = list(set(rec_teams + user_teams))
 
-        # NEW LOGIC: Filter out teams you officially burned in previous weeks
         officially_taken_before = set()
         for pw in range(1, w):
             for t in locked_picks.get(pw, []):
@@ -538,29 +536,33 @@ def sync_to_google_sheets():
     yellow_rows = []
     merge_ranges = []
 
-    current_start_row = 2
+    # SEPARATED ROW COUNTERS for independent stacking
+    left_row_idx = 2
+    right_row_idx = 2
+
     for w in range(1, WEEKS + 1):
         rec_display = optimal_display.get(w, "")
         user_actual_str = previous_actuals.get(w, "")
         
-        # STRUCTURAL ALIGNMENT: Lock the left column precisely to the start of its candidate block on the right
-        matrix[current_start_row - 1][0] = f"Week {w} (2 Picks)" if w in DOUBLE_PICK_WEEKS else f"Week {w}"
-        matrix[current_start_row - 1][1] = rec_display
-        matrix[current_start_row - 1][2] = ""
-        matrix[current_start_row - 1][3] = user_actual_str
+        # Write Left-Side Condensed Block
+        matrix[left_row_idx - 1][0] = f"Week {w} (2 Picks)" if w in DOUBLE_PICK_WEEKS else f"Week {w}"
+        matrix[left_row_idx - 1][1] = rec_display
+        matrix[left_row_idx - 1][2] = ""
+        matrix[left_row_idx - 1][3] = user_actual_str
+        left_row_idx += 1
 
+        # Write Right-Side Candidate Block
         rec_teams = optimal_picks_by_week.get(w, [])
         user_teams = locked_picks.get(w, [])
         chosen_set = set(rec_teams + user_teams)
-
         cands = sheet_weekly_display.get(w, [])
 
         label_suffix = " (DOUBLE PICK ROUND)" if w in DOUBLE_PICK_WEEKS else ""
-        matrix[current_start_row - 1][4] = f"Top candidates for Week {w}{label_suffix}"
-        merge_ranges.append(f"E{current_start_row}:I{current_start_row}")
+        matrix[right_row_idx - 1][4] = f"Top candidates for Week {w}{label_suffix}"
+        merge_ranges.append(f"E{right_row_idx}:I{right_row_idx}")
 
         for i, cand in enumerate(cands):
-            cand_row_num = current_start_row + 1 + i
+            cand_row_num = right_row_idx + 1 + i
             if cand["team"] in chosen_set:
                 yellow_rows.append(cand_row_num)
 
@@ -575,9 +577,9 @@ def sync_to_google_sheets():
             matrix[cand_row_num - 1][7] = m_prob_display
             matrix[cand_row_num - 1][8] = mod_prob_display
 
-        current_start_row += (1 + len(cands))
+        right_row_idx += (1 + len(cands))
 
-    season_row = current_start_row + 1
+    season_row = left_row_idx
     matrix[season_row - 1][0] = "🏆 Season Survival"
     matrix[season_row - 1][1] = f"{new_prob:.2f}%"
 
@@ -632,7 +634,7 @@ def sync_to_google_sheets():
     log_adjustments_to_sheet(
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
-    print("Success: Structural alignment fixed and passed-week candidates filtered.")
+    print("Success: Layout condensed and unlinked from right-side blocks.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
