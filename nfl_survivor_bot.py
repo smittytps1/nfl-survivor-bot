@@ -66,7 +66,7 @@ DIVISIONS = {
     "ARI": "NFCW", "LAR": "NFCW", "SF": "NFCW", "SEA": "NFCW"
 }
 
-# --- 2026 POWER RATINGS FOR AUTO-POPULATION ---
+# --- 2026 BASELINE POWER RATINGS (Dynamically updated in-season) ---
 POWER_RATINGS = {
     "LAR": 6.5, "SEA": 6.0, "BUF": 5.5, "HOU": 5.0, "DEN": 4.5, "NE": 4.0, 
     "PHI": 3.5, "LAC": 3.0, "KC": 2.5, "SF": 2.5, "BAL": 2.0, "DET": 2.0, 
@@ -116,13 +116,14 @@ def get_safe_abs_spread(cand_dict) -> float:
 def fetch_dynamic_schedule():
     url = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
     schedule_by_week = {w: [] for w in range(1, WEEKS + 1)}
-    print("Fetching authentic 2026 NFL schedule from nflverse...")
+    df_2026 = pd.DataFrame()
+    print("Fetching authentic 2026 NFL schedule and scores from nflverse...")
     try:
         res = requests.get(url, timeout=15)
         if res.status_code == 200:
             df = pd.read_csv(io.StringIO(res.text), low_memory=False)
-            df = df[(df['season'] == SEASON_YEAR) & (df['game_type'] == 'REG')]
-            for _, row in df.iterrows():
+            df_2026 = df[(df['season'] == SEASON_YEAR) & (df['game_type'] == 'REG')].copy()
+            for _, row in df_2026.iterrows():
                 w = int(row['week'])
                 if 1 <= w <= WEEKS:
                     h_abbr = team_to_abbr(row['home_team'])
@@ -134,7 +135,50 @@ def fetch_dynamic_schedule():
                         })
     except Exception as e:
         print(f"Notice on dynamic schedule fetch: {e}")
-    return schedule_by_week
+    return schedule_by_week, df_2026
+
+def update_dynamic_power_ratings(base_ratings, df_2026_games, live_odds_map, all_espn_odds):
+    """
+    Dynamically updates team Power Ratings using:
+    1. Completed 2026 game scores from nflverse (margin-of-victory vs expectation)
+    2. Current week live Vegas spreads (captures injuries & market shifts)
+    """
+    ratings = base_ratings.copy()
+    
+    # 1. Update from completed games in nflverse
+    if not df_2026_games.empty and 'home_score' in df_2026_games.columns and 'away_score' in df_2026_games.columns:
+        completed = df_2026_games.dropna(subset=['home_score', 'away_score']).sort_values('week')
+        k_factor = 0.12  # 12% weight per completed game surprise
+        
+        for _, row in completed.iterrows():
+            h = team_to_abbr(row['home_team'])
+            a = team_to_abbr(row['away_team'])
+            if h not in ratings or a not in ratings:
+                continue
+                
+            actual_margin = float(row['home_score']) - float(row['away_score'])
+            expected_margin = (ratings[h] - ratings[a]) + 2.0
+            
+            # Cap single-game surprise at 20 pts to prevent blowout distortion
+            surprise = max(-20.0, min(20.0, actual_margin - expected_margin))
+            
+            ratings[h] = round(ratings[h] + (k_factor * surprise), 2)
+            ratings[a] = round(ratings[a] - (k_factor * surprise), 2)
+
+    # 2. Blend in live Vegas market adjustments (injuries/roster shifts) for upcoming games
+    combined_live = {**all_espn_odds, **live_odds_map}
+    market_weight = 0.25  # Absorb 25% of the gap between model and live Vegas line
+    
+    for (h, a), live_home_spread in combined_live.items():
+        if h in ratings and a in ratings:
+            model_home_spread = round(ratings[a] - ratings[h] - 2.0, 1)
+            # Negative spread_diff means Vegas favors the home team less than our model
+            spread_diff = model_home_spread - live_home_spread
+            
+            ratings[h] = round(ratings[h] + (market_weight * spread_diff / 2.0), 2)
+            ratings[a] = round(ratings[a] - (market_weight * spread_diff / 2.0), 2)
+            
+    return ratings
 
 def fetch_online_sportsbook_odds(api_key: str):
     if not api_key:
@@ -187,7 +231,7 @@ def fetch_espn_live_odds(week: int):
         pass
     return espn_odds
 
-def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds):
+def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds, dynamic_ratings):
     try:
         lines_sheet = spreadsheet.worksheet(LINES_TAB_NAME)
         existing_data = lines_sheet.get_all_values()
@@ -234,14 +278,14 @@ def reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, al
             elif (h, a) in all_espn_odds:
                 chosen_spread = all_espn_odds[(h, a)]
                 source = "Live (ESPN)"
-            elif (w, h, a) in existing_lines and existing_lines[(w, h, a)]["source"] not in ["Default Baseline", "Power Rating Alg"]:
+            elif (w, h, a) in existing_lines and existing_lines[(w, h, a)]["source"] not in ["Default Baseline", "Power Rating Alg", "Dynamic PR Engine"]:
                 chosen_spread = existing_lines[(w, h, a)]["line"]
                 source = existing_lines[(w, h, a)]["source"]
             else:
-                h_pr = POWER_RATINGS.get(h, 0.0)
-                a_pr = POWER_RATINGS.get(a, 0.0)
+                h_pr = dynamic_ratings.get(h, 0.0)
+                a_pr = dynamic_ratings.get(a, 0.0)
                 chosen_spread = round(a_pr - h_pr - 2.0, 1)
-                source = "Power Rating Alg"
+                source = "Dynamic PR Engine"
 
             reconciled_schedule[w].append({
                 "home_team": h,
@@ -395,7 +439,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         if curr_act and curr_act != prev_act:
             newly_locked.append(f"Wk {w}: Locked {curr_act}")
 
-    trigger_description = "; ".join(newly_locked) if newly_locked else "Power Ratings & Schedule Alignment"
+    trigger_description = "; ".join(newly_locked) if newly_locked else "Dynamic PR & Schedule Sync"
     log_rows = []
     timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     survival_shift_str = f"{prev_prob:.2f}% -> {new_prob:.2f}%" if prev_prob is not None else f"{new_prob:.2f}%"
@@ -405,7 +449,7 @@ def log_adjustments_to_sheet(spreadsheet, previous_picks, current_picks, previou
         new_rec = current_picks.get(w, "")
 
         if old_rec and new_rec and old_rec != new_rec:
-            reason = "Rerouted due to User Pick" if newly_locked else "Double-pick portfolio optimization"
+            reason = "Rerouted due to User Pick" if newly_locked else "Dynamic rating & line optimization"
             log_rows.append([
                 timestamp_str, trigger_description, f"Week {w}", old_rec, new_rec, survival_shift_str, reason
             ])
@@ -462,14 +506,17 @@ def sync_to_google_sheets():
 
     print(f"Detected locked user picks: {locked_picks}")
 
-    schedule_2026 = fetch_dynamic_schedule()
+    schedule_2026, df_2026_games = fetch_dynamic_schedule()
     live_odds_map = fetch_online_sportsbook_odds(odds_api_key)
     
     all_espn_odds = {}
     for w in range(1, WEEKS + 1):
         all_espn_odds.update(fetch_espn_live_odds(w))
 
-    reconciled_schedule = reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds)
+    # Calculate dynamically updated in-season Power Ratings
+    dynamic_ratings = update_dynamic_power_ratings(POWER_RATINGS, df_2026_games, live_odds_map, all_espn_odds)
+
+    reconciled_schedule = reconcile_and_update_lines_tab(spreadsheet, schedule_2026, live_odds_map, all_espn_odds, dynamic_ratings)
     all_weekly_slates = build_slates_from_reconciled(reconciled_schedule)
     optimal_picks_by_week, optimal_display = solve_survivor_path(all_weekly_slates, locked_picks)
 
@@ -536,7 +583,7 @@ def sync_to_google_sheets():
     yellow_rows = []
     merge_ranges = []
 
-    # SEPARATED ROW COUNTERS for independent stacking
+    # Independent row counters so left side stays condensed at the top
     left_row_idx = 2
     right_row_idx = 2
 
@@ -634,7 +681,7 @@ def sync_to_google_sheets():
     log_adjustments_to_sheet(
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
-    print("Success: Layout condensed and unlinked from right-side blocks.")
+    print("Success: Dynamic Power Ratings applied and sheets updated.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
