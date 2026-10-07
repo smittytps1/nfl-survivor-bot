@@ -502,7 +502,7 @@ def sync_to_google_sheets():
                     locked_picks[w] = parse_actual_picks(cell_val)
                     previous_actuals[w] = cell_val
                     
-            if "Season Survival" in row[0]:
+            if "Survival" in row[0]:
                 if len(row) >= 2:
                     prob_raw = row[1].replace("%", "").strip()
                     try:
@@ -531,14 +531,30 @@ def sync_to_google_sheets():
         chosen_teams = locked_picks.get(w, []) if locked_picks.get(w) else optimal_picks_by_week.get(w, [])
         week_cands = all_weekly_slates.get(w, [])
         week_joint_prob = 1.0
+        
+        # Identify teams whose games have already finished with a recorded score
+        completed_teams_this_week = set()
+        if not df_2026_games.empty and 'home_score' in df_2026_games.columns:
+            wk_games = df_2026_games[df_2026_games['week'] == w]
+            for _, row in wk_games.iterrows():
+                if pd.notna(row['home_score']) and pd.notna(row['away_score']):
+                    completed_teams_this_week.add(team_to_abbr(row['home_team']))
+                    completed_teams_this_week.add(team_to_abbr(row['away_team']))
+
         for t in chosen_teams:
-            matched = next((c for c in week_cands if c["team"] == t and c["mod_prob"] is not None), None)
-            if matched and matched["mod_prob"] is not None:
-                week_joint_prob *= matched["mod_prob"]
+            if t in completed_teams_this_week:
+                # Game is completed; award 100% survival probability for this leg
+                week_joint_prob *= 1.0
             else:
-                week_joint_prob *= 0.74
+                matched = next((c for c in week_cands if c["team"] == t and c["mod_prob"] is not None), None)
+                if matched and matched["mod_prob"] is not None:
+                    week_joint_prob *= matched["mod_prob"]
+                else:
+                    week_joint_prob *= 0.74
+                    
         if not chosen_teams:
             week_joint_prob = 0.74
+            
         cum_prob *= week_joint_prob
 
     new_prob = cum_prob * 100.0
@@ -633,7 +649,7 @@ def sync_to_google_sheets():
         right_row_idx += (1 + len(cands))
 
     season_row = left_row_idx
-    matrix[season_row - 1][0] = "🏆 Season Survival"
+    matrix[season_row - 1][0] = "🏆 Rest of Season Survival"
     matrix[season_row - 1][1] = f"{new_prob:.2f}%"
 
     sheet.update(range_name=f"A1:I{total_grid_rows + 2}", values=matrix)
@@ -687,7 +703,7 @@ def sync_to_google_sheets():
     log_adjustments_to_sheet(
         spreadsheet, previous_picks, optimal_display, previous_actuals, locked_picks, prev_prob, new_prob
     )
-    print("Success: Dynamic Power Ratings applied and sheets updated.")
+    print("Success: Rest of Season Survival logic applied and sheets updated.")
 
 if __name__ == "__main__":
     sync_to_google_sheets()
