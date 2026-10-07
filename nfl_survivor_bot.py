@@ -126,6 +126,12 @@ def fetch_dynamic_schedule():
             for _, row in df_2026.iterrows():
                 w = int(row['week'])
                 if 1 <= w <= WEEKS:
+                    
+                    # FILTER: Remove Thursday games from candidate consideration
+                    weekday = str(row.get('weekday', '')).strip().lower()
+                    if weekday == 'thursday':
+                        continue
+                        
                     h_abbr = team_to_abbr(row['home_team'])
                     a_abbr = team_to_abbr(row['away_team'])
                     if h_abbr in ALL_TEAMS and a_abbr in ALL_TEAMS:
